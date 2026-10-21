@@ -118,6 +118,15 @@ class Store:
             f"ALTER TABLE {self.uat} ADD COLUMN IF NOT EXISTS DASHBOARD_NAME VARCHAR",
             f"ALTER TABLE {self.uat} ADD COLUMN IF NOT EXISTS PAGE_LABEL VARCHAR",
             f"ALTER TABLE {self.uat} ADD COLUMN IF NOT EXISTS TILE_TITLE VARCHAR",
+            f"""CREATE TABLE IF NOT EXISTS {self.schema}.AA_ALERTS (
+                ALERT_ID VARCHAR, NAME VARCHAR, SEMANTIC_VIEW VARCHAR, DASHBOARD_ID VARCHAR, DASHBOARD_NAME VARCHAR,
+                SPEC VARIANT, CHECK_SQL VARCHAR, ACTIVE BOOLEAN DEFAULT TRUE, DELETED BOOLEAN DEFAULT FALSE,
+                OWNER VARCHAR, CREATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(), UPDATED_AT TIMESTAMP_LTZ,
+                LAST_CHECK_AT VARCHAR, LAST_STATUS VARCHAR, LAST_VALUE FLOAT, LAST_MESSAGE VARCHAR,
+                LAST_FIRED_KEY VARCHAR, LAST_FIRED_AT VARCHAR)""",
+            f"""CREATE TABLE IF NOT EXISTS {self.schema}.AA_ALERT_RUNS (
+                RUN_ID VARCHAR, ALERT_ID VARCHAR, CHECKED_AT VARCHAR, TRIGGER_KIND VARCHAR, STATUS VARCHAR,
+                PERIOD_LABEL VARCHAR, VALUE FLOAT, COMPARE_VALUE FLOAT, FIRED BOOLEAN, EMAILED BOOLEAN, MESSAGE VARCHAR)""",
             f"""CREATE TABLE IF NOT EXISTS {self.settings} (
                 SETTING_KEY VARCHAR, SETTING_VALUE VARCHAR, SET_BY VARCHAR,
                 SET_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP())""",
@@ -498,6 +507,63 @@ class Store:
             return [{k.lower(): v for k, v in row_dict(r).items()} for r in rows]
         except Exception:
             return []
+
+    # -- data alerts -----------------------------------------------------------------------------------------------
+    def save_alert(self, spec: dict[str, Any], sql: str, alert_id: str = "") -> str:
+        self.ensure()
+        if alert_id:
+            self.session.sql(
+                f"UPDATE {self.schema}.AA_ALERTS SET NAME = ?, SPEC = PARSE_JSON(?), CHECK_SQL = ?, "
+                "UPDATED_AT = CURRENT_TIMESTAMP(), LAST_FIRED_KEY = '' WHERE ALERT_ID = ?",
+                params=[spec.get("name", "")[:200], json.dumps(spec, default=str), sql, alert_id]).collect()
+            return alert_id
+        aid = uuid.uuid4().hex[:12]
+        self.session.sql(
+            f"INSERT INTO {self.schema}.AA_ALERTS (ALERT_ID, NAME, SEMANTIC_VIEW, DASHBOARD_ID, DASHBOARD_NAME, SPEC, "
+            "CHECK_SQL, ACTIVE, DELETED, OWNER) SELECT ?, ?, ?, ?, ?, PARSE_JSON(?), ?, TRUE, FALSE, "
+            "COALESCE(NULLIF(?, ''), CURRENT_USER())",
+            params=[aid, spec.get("name", "")[:200], spec.get("sv", ""), spec.get("dashboard_id", ""),
+                    spec.get("dashboard_name", ""), json.dumps(spec, default=str), sql, self.actor or ""]).collect()
+        return aid
+
+    def list_alerts(self) -> list[dict[str, Any]]:
+        try:
+            self.ensure()
+            rows = self.session.sql(
+                f"SELECT ALERT_ID, NAME, SEMANTIC_VIEW, DASHBOARD_ID, DASHBOARD_NAME, TO_VARCHAR(SPEC) AS SPEC, "
+                "ACTIVE, OWNER, TO_VARCHAR(CREATED_AT, 'YYYY-MM-DD HH24:MI') AS CREATED_AT, LAST_CHECK_AT, LAST_STATUS, "
+                f"LAST_VALUE, LAST_MESSAGE, LAST_FIRED_AT FROM {self.schema}.AA_ALERTS WHERE DELETED = FALSE "
+                "ORDER BY CREATED_AT DESC").collect()
+            out = []
+            for r in rows:
+                d = {k.lower(): v for k, v in row_dict(r).items()}
+                try:
+                    d["spec"] = json.loads(d.get("spec") or "{}")
+                except ValueError:
+                    d["spec"] = {}
+                out.append(d)
+            return out
+        except Exception:
+            return []
+
+    def alert_runs(self, alert_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        try:
+            rows = self.session.sql(
+                f"SELECT CHECKED_AT, TRIGGER_KIND, STATUS, PERIOD_LABEL, VALUE, COMPARE_VALUE, FIRED, EMAILED, MESSAGE "
+                f"FROM {self.schema}.AA_ALERT_RUNS WHERE ALERT_ID = ? ORDER BY CHECKED_AT DESC LIMIT {int(limit)}",
+                params=[alert_id]).collect()
+            return [{k.lower(): v for k, v in row_dict(r).items()} for r in rows]
+        except Exception:
+            return []
+
+    def set_alert(self, alert_id: str, active: Optional[bool] = None, deleted: bool = False) -> None:
+        self.ensure()
+        if deleted:
+            self.session.sql(f"UPDATE {self.schema}.AA_ALERTS SET DELETED = TRUE, ACTIVE = FALSE WHERE ALERT_ID = ?",
+                             params=[alert_id]).collect()
+        elif active is not None:
+            self.session.sql(f"UPDATE {self.schema}.AA_ALERTS SET ACTIVE = ? WHERE ALERT_ID = ?",
+                             params=[bool(active), alert_id]).collect()
 
     def set_setting(self, key: str, value: str) -> None:
         self.ensure()

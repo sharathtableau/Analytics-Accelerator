@@ -42,6 +42,8 @@ import validation
 import themes
 import uat
 import uat_export
+import alerts
+import alerts_core
 import base64
 import threading
 
@@ -83,6 +85,7 @@ for _k, _v in {"view": {"grain": None, "compare": "prior", "filters": {}}, "filt
                "filter_options": {}, "draft": None, "tile_chat": {}, "viewer_mode": False, "published": [],
                "roles": [], "share": None, "featured": [], "data_brief": [], "prompts": [], "themes": [],
                "theme_default": {}, "theme_draft": None, "uat_entries": [], "download": None, "uat_inbox": None,
+               "alert_draft": None, "alerts": None, "open_drawer": None,
                "uat_focus": None}.items():
     S.setdefault(_k, _v)
 store = Store(session, config.APP_SCHEMA)
@@ -372,6 +375,10 @@ def boot():
     load_themes()
     if not PORTAL:
         uat_inbox_refresh()                     # badges on Change requests / Waiting for my sign-off
+        try:
+            alerts_open()                       # badge on My alerts (alerts that fired)
+        except Exception:
+            S["alerts"] = None
     try:
         wanted = st.query_params.get("view")
     except Exception:
@@ -2040,6 +2047,295 @@ def uat_download(p):
     S["notice"] = "UAT pack ready: the download starts in your browser."
 
 
+# ------------------------------------------------------------------------------ data alerts (email)
+def _alert_model(sv: str):
+    """The semantic view an alert watches: the one on screen, or described once for an alert of another view."""
+    if S.get("source") and S["source"]["fqn"] == sv:
+        return model_obj()
+    cache = st.session_state.setdefault("_alert_models", {})
+    if sv not in cache:
+        base, _, table = sv.partition("#")
+        m = describe_semantic_view(session, base)
+        cache[sv] = scope_model(m, table) if table else m
+    return cache[sv]
+
+
+def _alert_values(m) -> dict:
+    """Values of each filterable dimension (for the form and to check Cortex's reading); cached per view."""
+    cache = st.session_state.setdefault("_alert_values", {})
+    if m.fqn not in cache:
+        q = SemanticQuery(session, m, S["sql_log"])
+        out = {}
+        for d in list(m.categorical_dimensions)[:20]:
+            try:
+                out[d.id] = distinct_values(q, d.id, 60)
+            except Exception:
+                continue
+        cache[m.fqn] = out
+    return cache[m.fqn]
+
+
+def _alert_kinds(m) -> dict:
+    """percent / currency / number per metric, measured once on the data: a ratio-looking name (GROSS_MARGIN)
+    is only a percentage when its value is a fraction."""
+    cache = st.session_state.setdefault("_alert_kinds", {})
+    if m.fqn not in cache:
+        from engine import PERCENT, fmt_kind
+        q = SemanticQuery(session, m, S["sql_log"])
+        out = {}
+        for f in m.metrics:
+            if not PERCENT.search(f.name):
+                out[f.id] = fmt_kind(f.name)
+                continue
+            try:
+                r = q.run("SELECT * FROM " + q.sv([], [f"{f.ref} AS V"]))
+                v = r[0].get("v") if r else None
+                out[f.id] = fmt_kind(f.name, None if v is None else float(v))
+            except Exception:
+                out[f.id] = fmt_kind(f.name)
+        cache[m.fqn] = out
+    return cache[m.fqn]
+
+
+def _alert_time(m) -> str:
+    if S.get("source") and S["source"]["fqn"] == m.fqn and (S.get("bindings") or {}).get("time_dimension"):
+        return S["bindings"]["time_dimension"]
+    return infer_bindings(m).time_dimension
+
+
+def _viewer_email() -> str:
+    try:
+        e = str(st.user.get("email") or "")
+        return e if alerts.EMAIL.match(e) else ""
+    except Exception:
+        return ""
+
+
+def _alert_draft(spec_in: dict, editing: str = "", text: str = "", question: str = "", provenance: str = "",
+                 preview=None, sv: str = ""):
+    sv = sv or spec_in.get("sv") or (S.get("source") or {}).get("fqn") or ""
+    if not sv:
+        raise ValueError("Open a dashboard first: alerts watch the semantic view behind it.")
+    m = _alert_model(sv)
+    vals = _alert_values(m)
+    kinds = _alert_kinds(m)
+    spec, issues = alerts.normalize(m, spec_in, vals, _alert_time(m), kinds=kinds)
+    S["alert_draft"] = {"spec": spec, "issues": issues, "sentence": alerts_core.describe(spec) if spec.get("metric") else "",
+                        "schedule_text": alerts_core.schedule_text(spec.get("schedule")),
+                        "options": alerts.options(m, vals, kinds), "editing": editing, "text": text, "question": question,
+                        "provenance": provenance, "preview": preview}
+    return m, spec, issues
+
+
+def _open_drawer(name: str):
+    S["open_drawer"] = {"name": name, "id": f"{time.time():.3f}"}
+
+
+def alert_new(p):
+    """Alert me… on a tile: the tile's metric and the dashboard's filters, the signed-in person's email."""
+    seed = {"filters": {k: list(v) for k, v in ((S.get("view") or {}).get("filters") or {}).items() if v},
+            "recipients": [e for e in [_viewer_email()] if e],
+            "schedule": {"freq": "daily", "hour": 8, "tz": str(p.get("tz") or "UTC")[:60]},
+            "dashboard_id": (S.get("dashboard") or {}).get("dashboard_id") or "",
+            "dashboard_name": (S.get("dashboard") or {}).get("name") or (S.get("spec") or {}).get("display_name") or ""}
+    comp = None
+    if p.get("page_id") and p.get("component_id"):
+        try:
+            comp = _find(p["page_id"], p["component_id"])[1]
+        except Exception:
+            comp = None
+    if comp:
+        seed["metric"] = comp.get("metric_id") or (comp.get("metrics") or [None])[0]
+    else:
+        seed["metric"] = (S.get("bindings") or {}).get("primary_metric")
+    _alert_draft(seed)
+    _open_drawer("alert")
+
+
+def alert_update(p):
+    d = S.get("alert_draft") or {}
+    _alert_draft(p.get("spec") or {}, d.get("editing", ""), d.get("text", ""), "", d.get("provenance", ""))
+
+
+def alert_parse(p):
+    """Plain English -> alert fields (Cortex reads, normalize() checks every part against the semantic view)."""
+    d = S.get("alert_draft") or {}
+    cur = dict(p.get("spec") or d.get("spec") or {})
+    text = str(p.get("text") or "").strip()[:600]
+    if not text:
+        raise ValueError("Type what you want to be alerted about.")
+    started = time.time()
+    m = _alert_model(cur.get("sv") or (S.get("source") or {}).get("fqn") or "")
+    opts = alerts.options(m, _alert_values(m), _alert_kinds(m))
+    try:
+        cx = cortex()
+    except Exception:
+        cx = None
+    fields, question, prov = alerts.parse_text(cx, opts, text, {"metric": cur.get("metric")})
+    merged = {**cur, **{k: v for k, v in fields.items() if v not in (None, "", [], {})}}
+    merged["recipients"] = list(dict.fromkeys((cur.get("recipients") or []) + (fields.get("recipients") or [])))
+    if fields.get("schedule"):
+        merged["schedule"] = {**(cur.get("schedule") or {}), **fields["schedule"]}
+    if "filters" in fields:
+        merged["filters"] = fields.get("filters") or {}
+    _alert_draft(merged, d.get("editing", ""), text, question, prov)
+    log_ai("alert_parse", text, json.dumps(fields)[:3900], prov, "valid" if not S["alert_draft"]["issues"] else "partial",
+           started)
+
+
+def _alert_check(spec_in: dict):
+    d = S.get("alert_draft") or {}
+    m, spec, issues = _alert_draft(spec_in, d.get("editing", ""), d.get("text", ""), d.get("question", ""),
+                                   d.get("provenance", ""))
+    blocking = [i for i in issues if "email" not in i.lower()]
+    if not spec.get("metric") or blocking:
+        raise ValueError("Before testing: " + " ".join(blocking or issues or ["Choose the metric to watch."]))
+    sql = alerts.check_sql(m, spec)
+    rows = SemanticQuery(session, m, S["sql_log"]).run(sql)
+    res = alerts_core.evaluate(spec, rows)
+    S["alert_draft"]["preview"] = {**res, "value_text": alerts_core.fmt(res.get("value"), spec.get("kind"))}
+    return m, spec, issues, sql, res
+
+
+def alert_preview(p):
+    _alert_check(p.get("spec") or (S.get("alert_draft") or {}).get("spec") or {})
+
+
+def alert_test(p):
+    m, spec, issues, sql, res = _alert_check(p.get("spec") or (S.get("alert_draft") or {}).get("spec") or {})
+    if not spec.get("recipients"):
+        raise ValueError("Add at least one email address.")
+    subj, body = alerts_core.email(spec, res, test=True, app_url=getattr(config, "PORTAL_URL", ""))
+    try:
+        integ = alerts_core.send_email(session, config.APP_SCHEMA, spec["recipients"], subj, body)
+    except Exception as exc:
+        raise ValueError(f"Snowflake could not send the email: {str(exc)[:300]} — email needs the admin setup "
+                         "(setup\\admin_alerts_email.sql): the notification integration, and each recipient's email "
+                         "verified on their Snowflake user.")
+    S["notice"] = f"Test email sent to {', '.join(spec['recipients'])} through {integ}."
+
+
+def alert_save(p):
+    d = S.get("alert_draft") or {}
+    m, spec, issues = _alert_draft(p.get("spec") or d.get("spec") or {}, d.get("editing", ""), d.get("text", ""),
+                                   d.get("question", ""), d.get("provenance", ""), d.get("preview"))
+    if issues:
+        raise ValueError("Fix before saving: " + " ".join(issues))
+    aid = store.save_alert(spec, alerts.check_sql(m, spec), d.get("editing", ""))
+    S["alert_draft"] = None
+    alerts_open()
+    _open_drawer("alerts")
+    S["notice"] = (f"Alert {'updated' if d.get('editing') else 'created'}: {alerts_core.describe(spec)}. "
+                   f"{alerts_core.schedule_text(spec['schedule'])}." + ("" if (S["alerts"]["setup"] or {}).get("task_on")
+                   else " Scheduled checks start once the hourly schedule is on (My alerts)."))
+    return aid
+
+
+def alert_edit(p):
+    a = next((x for x in store.list_alerts() if x["alert_id"] == p.get("alert_id")), None)
+    if not a:
+        raise ValueError("Alert not found.")
+    _alert_draft(a["spec"], a["alert_id"])
+    _open_drawer("alert")
+
+
+def _alert_setup() -> dict:
+    out = {"integration": alerts_core.integration_name(session, config.APP_SCHEMA), "integration_found": None,
+           "task_on": False, "task_state": ""}
+    try:
+        names = [str(row_dict(r).get("name") or "").upper() for r in session.sql("SHOW NOTIFICATION INTEGRATIONS").collect()]
+        out["integration_found"] = out["integration"].upper() in names
+        out["integrations"] = names[:20]
+    except Exception as exc:
+        out["integration_error"] = str(exc)[:200]
+    try:
+        rows = session.sql(f"SHOW TASKS LIKE 'AA_ALERTS_TASK' IN SCHEMA {config.APP_SCHEMA}").collect()
+        st_ = str(row_dict(rows[0]).get("state") or "") if rows else ""
+        out["task_state"], out["task_on"] = st_, st_.lower() == "started"
+    except Exception:
+        pass
+    if rows_task_exists(out):                     # keep the scheduled checker on the same code as this app version
+        try:
+            if ((store.get_setting("alert_proc_version") or {}).get("setting_value") or "") != alerts_core.CORE_VERSION:
+                session.sql(alerts.proc_ddl(config.APP_SCHEMA, getattr(config, "PORTAL_URL", ""))).collect()
+                store.set_setting("alert_proc_version", alerts_core.CORE_VERSION)
+        except Exception as exc:
+            out["proc_error"] = str(exc)[:200]
+    return out
+
+
+def rows_task_exists(setup: dict) -> bool:
+    return bool(setup.get("task_state"))
+
+
+def alerts_open(_p=None):
+    items = store.list_alerts()
+    for a in items:
+        sp = a.get("spec") or {}
+        a["sentence"] = alerts_core.describe(sp) if sp.get("metric") else a.get("name")
+        a["schedule_text"] = alerts_core.schedule_text(sp.get("schedule"))
+        a["value_text"] = alerts_core.fmt(a.get("last_value"), sp.get("kind")) if a.get("last_value") is not None else ""
+        a["recipients"] = sp.get("recipients") or []
+    S["alerts"] = {"items": items, "setup": _alert_setup(), "runs": (S.get("alerts") or {}).get("runs") or {},
+                   "firing": sum(1 for a in items if a.get("active") and a.get("last_status") == "fired")}
+
+
+def alert_runs(p):
+    aid = str(p.get("alert_id") or "")
+    if S.get("alerts") is None:
+        alerts_open()
+    S["alerts"]["runs"][aid] = store.alert_runs(aid)
+
+
+def alert_toggle(p):
+    store.set_alert(str(p.get("alert_id") or ""), active=bool(p.get("active")))
+    alerts_open()
+
+
+def alert_delete(p):
+    store.set_alert(str(p.get("alert_id") or ""), deleted=True)
+    alerts_open()
+    S["notice"] = "Alert deleted."
+
+
+def alert_run(p):
+    """Check now: one alert or all of them, right away (emails the ones that fire, once per period)."""
+    aid = str(p.get("alert_id") or "") or None
+    out = alerts_core.run_alerts(session, config.APP_SCHEMA, only_id=aid, force=True, trigger="manual",
+                                 app_url=getattr(config, "PORTAL_URL", ""))
+    alerts_open()
+    if aid:
+        S["alerts"]["runs"][aid] = store.alert_runs(aid)
+    fired = [x for x in out if x["fired"]]
+    mailed = [x for x in out if x["emailed"]]
+    notes = [x["note"] for x in out if x.get("note") and "Already" not in x["note"]]
+    S["notice"] = (f"Checked {len(out)} alert(s): {len(fired)} fired, {len(mailed)} emailed."
+                   + (f" {notes[0]}" if notes else ""))
+
+
+def alert_schedule(_p=None):
+    """Install the checker procedure and the hourly task (needs CREATE PROCEDURE/TASK; EXECUTE TASK to resume)."""
+    try:
+        session.sql(alerts.proc_ddl(config.APP_SCHEMA, getattr(config, "PORTAL_URL", ""))).collect()
+        for q in alerts.task_ddl(config.APP_SCHEMA, config.AGENT_WAREHOUSE):
+            session.sql(q).collect()
+        store.set_setting("alert_proc_version", alerts_core.CORE_VERSION)
+    except Exception as exc:
+        alerts_open()
+        raise ValueError(f"The hourly schedule could not be turned on: {str(exc)[:240]}. This needs the EXECUTE TASK "
+                         "privilege for the app's role; an admin can grant it with setup\\admin_alerts_email.sql.")
+    alerts_open()
+    S["notice"] = "Hourly schedule is on: Snowflake task AA_ALERTS_TASK checks every alert when it is due."
+
+
+def alert_integration(p):
+    name = re.sub(r"[^A-Za-z0-9_$.]", "", str(p.get("name") or ""))[:120]
+    if not name:
+        raise ValueError("Type the notification integration's name.")
+    store.set_setting("alert_email_integration", name)
+    alerts_open()
+
+
 def val_resolve(p):
     """Accept a finding with a reason (expires; re-opens if the numbers change) or hand it to an owner as a data issue."""
     cid, action = str(p.get("cid") or ""), p.get("action")
@@ -2500,7 +2796,11 @@ ACTIONS = {
     "theme_preview": theme_preview, "theme_save": theme_save, "theme_default": theme_default,
     "theme_apply": theme_apply, "theme_delete": theme_delete, "theme_cancel": lambda p: S.update(theme_draft=None),
     "uat_tile": uat_tile, "uat_page": uat_page, "uat_builder": uat_builder, "uat_open": uat_open,
-    "uat_owner": uat_owner, "uat_inbox": uat_inbox_refresh, "uat_requirement": uat_requirement, "uat_download": uat_download,
+    "uat_owner": uat_owner, "uat_inbox": uat_inbox_refresh,
+    "alert_new": alert_new, "alert_update": alert_update, "alert_parse": alert_parse, "alert_preview": alert_preview,
+    "alert_test": alert_test, "alert_save": alert_save, "alert_edit": alert_edit, "alerts_open": alerts_open,
+    "alert_runs": alert_runs, "alert_toggle": alert_toggle, "alert_delete": alert_delete, "alert_run": alert_run,
+    "alert_schedule": alert_schedule, "alert_integration": alert_integration, "uat_requirement": uat_requirement, "uat_download": uat_download,
     "download_done": lambda p: S.update(download=None),
 }
 VIEWER_ACTIONS = {"set_view", "load_page", "refresh", "enrich", "narrative", "tile_ask", "ask", "go", "exit_viewer", "open_published",

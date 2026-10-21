@@ -27,6 +27,8 @@ entities:
       - uat.py
       - uat_export.py
       - xlsx_lite.py
+      - alerts.py
+      - alerts_core.py
       - persona_tiles.py
       - persona_layouts.py
       - metric_drafter.py
@@ -69,6 +71,8 @@ entities:
       - uat.py
       - uat_export.py
       - xlsx_lite.py
+      - alerts.py
+      - alerts_core.py
       - persona_tiles.py
       - persona_layouts.py
       - metric_drafter.py

@@ -237,6 +237,16 @@ class FakeSession:
                                                      {"fqn": "WBR_DB.PUBLIC.CARRIERS", "why": "carrier type and SLA"},
                                                      {"fqn": "WBR_DB.PUBLIC.NOT_LISTED", "why": "invented"}],
                                           "note": "No customer table found."})}]
+            if "You turn a business user's alert request" in prompt:
+                req = prompt.split("User request:", 1)[1].split("\n", 1)[0]
+                emails = re.findall(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", req)
+                out = {"metric": "ORDERS.PROFIT_RATIO", "filters": {"ORDERS.REGION": ["West"]} if "west" in req.lower() else {},
+                       "grain": "day", "rule": "threshold", "op": "below", "value": 12,
+                       "schedule": {"freq": "daily", "hour": 9}, "recipients": emails,
+                       "missing_people": ["Priya"] if "priya" in req.lower() else [], "question": ""}
+                if "margin" in req.lower() and "ratio" not in req.lower():
+                    out["question"] = "Did you mean Profit Ratio (a %) or Profit (an amount)?"
+                return [{"R": json.dumps(out)}]
             if "You turn a business user's description of a metric" in prompt:
                 req = prompt.split("User request:", 1)[1].split("\n", 1)[0].lower()
                 if "only" in req or "region" in req:
@@ -512,6 +522,67 @@ class FakeSession:
             for r in th:
                 latest[r["THEME_ID"]] = r
             return list(latest.values())
+        # ---- data alerts ----
+        if up.startswith("CREATE OR REPLACE PROCEDURE") or up.startswith("CREATE OR REPLACE TASK") \
+                or up.startswith("ALTER TASK"):
+            self.tables["DDL"].append(s[:120])
+            return [{"status": "ok"}]
+        if "SYSTEM$SEND_EMAIL" in up:
+            import os
+            if os.environ.get("AA_FAKE_NO_EMAIL"):
+                raise RuntimeError("Integration 'AA_EMAIL_INT' does not exist or not authorized.")
+            self.tables["EMAILS"].append({"integration": params[0], "to": params[1], "subject": params[2],
+                                          "body": params[3]})
+            return [{"R": True}]
+        if up.startswith("SHOW NOTIFICATION INTEGRATIONS"):
+            import os
+            return [{"name": "AA_EMAIL_INT", "type": "EMAIL", "enabled": "true"}] if not os.environ.get("AA_FAKE_NO_EMAIL") else []
+        if up.startswith("SHOW TASKS"):
+            return [{"name": "AA_ALERTS_TASK", "state": "started"}] if any("TASK" in d for d in self.tables["DDL"]) else []
+        if "AA_ALERT_RUNS" in up:
+            runs = self.tables["ALERT_RUNS"]
+            if up.startswith("CREATE"):
+                return []
+            if up.startswith("INSERT"):
+                keys = ["RUN_ID", "ALERT_ID", "CHECKED_AT", "TRIGGER_KIND", "STATUS", "PERIOD_LABEL", "VALUE",
+                        "COMPARE_VALUE", "FIRED", "EMAILED", "MESSAGE"]
+                runs.append(dict(zip(keys, params)))
+                return []
+            return [r for r in runs if r["ALERT_ID"] == params[0]][::-1]
+        if "AA_ALERTS" in up:
+            al = self.tables["ALERTS"]
+            if up.startswith("CREATE"):
+                return []
+            if up.startswith("INSERT"):
+                keys = ["ALERT_ID", "NAME", "SEMANTIC_VIEW", "DASHBOARD_ID", "DASHBOARD_NAME", "SPEC", "CHECK_SQL",
+                        "OWNER"]
+                row = dict(zip(keys, params))
+                row.update(ACTIVE=True, DELETED=False, OWNER=row["OWNER"] or "SHARATH", CREATED_AT=f"2026-10-21 10:{len(al):02d}",
+                           LAST_CHECK_AT=None, LAST_STATUS=None, LAST_VALUE=None, LAST_MESSAGE=None,
+                           LAST_FIRED_KEY="", LAST_FIRED_AT=None)
+                al.append(row)
+                return []
+            if up.startswith("UPDATE"):
+                aid = params[-1]
+                for r in al:
+                    if r["ALERT_ID"] != aid:
+                        continue
+                    if "SET DELETED = TRUE" in up:
+                        r.update(DELETED=True, ACTIVE=False)
+                    elif "SET ACTIVE = ?" in up:
+                        r["ACTIVE"] = params[0]
+                    elif "SET NAME = ?" in up:
+                        r.update(NAME=params[0], SPEC=params[1], CHECK_SQL=params[2], LAST_FIRED_KEY="")
+                    elif "SET LAST_CHECK_AT" in up:
+                        r.update(LAST_CHECK_AT=params[0], LAST_STATUS=params[1], LAST_VALUE=params[2],
+                                 LAST_MESSAGE=params[3], LAST_FIRED_KEY=params[4])
+                        if params[5]:
+                            r["LAST_FIRED_AT"] = params[6]
+                return []
+            live = [r for r in al if not r["DELETED"]]
+            if "ALERT_ID = ?" in up:
+                live = [r for r in live if r["ALERT_ID"] == params[0]]
+            return [dict(r) for r in live][::-1]
         if "AA_UAT_SIGNOFFS" in up:
             ut = self.tables.setdefault("UAT", [])
             if up.startswith("CREATE"):

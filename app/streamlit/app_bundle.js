@@ -8383,6 +8383,7 @@ function Tp({ c: e, page: t, data: n, send: s, onClose: r }) {
     return ((M = i.distinct) == null ? void 0 : M[g]) != null ? ` (${i.distinct[g]})` : "";
   }, p = ["kpi_grid", "kpi_card"].includes(e.type), v = Yl(i.okMetrics([a, e.dimension2], e.type), e.metric_id, i.allMetrics), j = Yl(i.okMetrics([a], e.type).filter((g) => g.id !== e.metric_id), e.metric2_id, i.allMetrics), y = Yl(i.okDims([e.metric_id, e.metric2_id], e.type), a, i.allDims), C = Yl(i.okDims([e.metric_id], e.type, "dim2").filter((g) => g.id !== a), e.dimension2, i.allDims), k = i.allDims.length - i.okDims([e.metric_id, e.metric2_id], e.type).length;
   return /* @__PURE__ */ l.jsxs("div", { className: "tmenu", onMouseLeave: r, children: [
+    /* @__PURE__ */ l.jsx("button", { type: "button", className: "tmenu-alert", onClick: () => (s("alert_new", { page_id: t.page_id, component_id: e.component_id, tz: alTz() }, "Opening the alert form…"), r()), children: "🔔 Alert me…" }),
     rs.includes(e.type) && /* @__PURE__ */ l.jsxs("label", { children: [
       "Chart type",
       /* @__PURE__ */ l.jsx("select", { value: e.type, onChange: (g) => u({ type: g.target.value }), children: rs.map((g) => {
@@ -9354,6 +9355,9 @@ function Hp({ data: e, emit: t }) {
     ro && ro.observe(el);
     return () => (ob.disconnect(), ro && ro.disconnect());
   }, []);
+  P.useEffect(() => {
+    e.open_drawer && e.open_drawer.name && i(e.open_drawer.name);
+  }, [e.open_drawer && e.open_drawer.id]);
   if (r && anchor.current.r !== r) anchor.current = { r, y: clickY.current, btn: clickBtn.current, vis: vis.current };
   if (!r) anchor.current.r = null;
   P.useEffect(() => {
@@ -9467,6 +9471,11 @@ function Hp({ data: e, emit: t }) {
           /* @__PURE__ */ l.jsx("span", { className: "num", children: "✅" }),
           /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: "Waiting for my sign-off" }), /* @__PURE__ */ l.jsx("small", { children: "Fixes to re-check" })] }),
           ((e.uat_inbox || {}).badge_recheck || 0) > 0 && /* @__PURE__ */ l.jsx("span", { className: "nav-badge blue", children: e.uat_inbox.badge_recheck })
+        ] }),
+        /* @__PURE__ */ l.jsxs("button", { type: "button", className: `step done ${r === "alerts" || r === "alert" ? "on" : ""}`, onClick: () => i("alerts"), children: [
+          /* @__PURE__ */ l.jsx("span", { className: "num", children: "🔔" }),
+          /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: "My alerts" }), /* @__PURE__ */ l.jsx("small", { children: "Data alerts by email" })] }),
+          ((e.alerts || {}).firing || 0) > 0 && /* @__PURE__ */ l.jsx("span", { className: "nav-badge red", title: "Alerts that fired on their last check", children: e.alerts.firing })
         ] })
       ] }),
       /* @__PURE__ */ l.jsxs("nav", { className: "steps portal-nav settings-nav", children: [
@@ -9504,8 +9513,8 @@ function Hp({ data: e, emit: t }) {
     r && /* @__PURE__ */ l.jsxs(
       _p,
       {
-        title: { agent: "Cortex Agent", decisions: "Decisions", governance: "Governance & AI quality", builder: "Connect a table · semantic view drafted by Cortex", theme: "Company theme", requests: "Change requests", recheck: "Waiting for my sign-off" }[r],
-        wide: r === "builder" || r === "theme" || r === "requests" || r === "recheck",
+        title: { agent: "Cortex Agent", decisions: "Decisions", governance: "Governance & AI quality", builder: "Connect a table · semantic view drafted by Cortex", theme: "Company theme", requests: "Change requests", recheck: "Waiting for my sign-off", alert: "🔔 Data alert", alerts: "🔔 My alerts" }[r],
+        wide: r === "builder" || r === "theme" || r === "requests" || r === "recheck" || r === "alert" || r === "alerts",
         top: anchor.current.y,
         vis: anchor.current.vis,
         btn: anchor.current.btn,
@@ -9519,7 +9528,9 @@ function Hp({ data: e, emit: t }) {
           r === "builder" && /* @__PURE__ */ l.jsx(Up, { data: e, send: d, pending: n, onDone: () => i(null) }),
           r === "governance" && /* @__PURE__ */ l.jsx(nm, { data: e, send: d }),
           r === "theme" && /* @__PURE__ */ l.jsx(ThmPanel, { data: e, send: d, pending: n }),
-          (r === "requests" || r === "recheck") && /* @__PURE__ */ l.jsx(UatInbox, { data: e, send: d, kind: r, onClose: () => i(null) })
+          (r === "requests" || r === "recheck") && /* @__PURE__ */ l.jsx(UatInbox, { data: e, send: d, kind: r, onClose: () => i(null) }),
+          r === "alert" && /* @__PURE__ */ l.jsx(AlertForm, { data: e, send: d, onClose: () => i(null), pending: n }),
+          r === "alerts" && /* @__PURE__ */ l.jsx(AlertsPanel, { data: e, send: d })
         ]
       }
     ),
@@ -9973,6 +9984,196 @@ function UatInbox({ data: e, send: t, kind, onClose }) {
       ] }, r.dashboard_id + r.cid))
     ] }, g.id)),
     /* @__PURE__ */ l.jsx("p", { className: "muted small", children: "Only saved dashboards are listed. Requests are stored in AA_UAT_SIGNOFFS; owners are the dashboard's creator unless handed over." })
+  ] });
+}
+/* ---- Data alerts (21 Oct): Alert me… form (plain English + options) and My alerts ---- */
+const AL_RULES = [["threshold", "Above / below a value"], ["change", "Changes vs before"], ["plan", "Behind / ahead of plan"], ["freshness", "No new data"]];
+const AL_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const AL_STATUS = { fired: "Fired", ok: "OK", no_data: "No data", error: "Error" };
+function alTz() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch (x) {
+    return "UTC";
+  }
+}
+function alWhen(iso) {
+  const t = Date.parse(String(iso || ""));
+  if (isNaN(t)) return String(iso || "");
+  const d = new Date(t);
+  return `${d.getDate()} ${UAT_MON[d.getMonth()]} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+function AlertForm({ data: e, send: t, onClose: oc, pending: pd }) {
+  const d = e.alert_draft;
+  const [sp, setSp] = P.useState(d ? d.spec : {}), [txt, setTxt] = P.useState(d ? d.text || "" : ""), [em, setEm] = P.useState(""), [fd, setFd] = P.useState(""), [fv, setFv] = P.useState("");
+  P.useEffect(() => {
+    d && setSp({ ...d.spec, schedule: { ...(d.spec.schedule || {}), tz: (d.spec.schedule || {}).tz && d.spec.schedule.tz !== "UTC" ? d.spec.schedule.tz : alTz() } });
+  }, [d && JSON.stringify(d.spec)]);
+  if (!d) return /* @__PURE__ */ l.jsx("div", { className: "muted", children: "Open a dashboard and use ⋯ → Alert me… on a tile." });
+  const o = d.options || { metrics: [], dims: [] }, met = o.metrics.find((m) => m.id === sp.metric) || {}, pc = met.kind === "percent";
+  const push = (patch) => {
+    const n = { ...sp, ...patch };
+    setSp(n), t("alert_update", { spec: n }, "", !0);
+  };
+  const sch = sp.schedule || {}, setSch = (patch) => push({ schedule: { ...sch, ...patch } });
+  const addMail = () => {
+    const xs = em.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
+    xs.length && push({ recipients: [...new Set([...(sp.recipients || []), ...xs])] }), setEm("");
+  };
+  const dimOpt = o.dims.find((x) => x.id === fd);
+  const flt = sp.filters || {};
+  const rule = sp.rule || "threshold";
+  const pv = d.preview, blk = (d.issues || []).some((x) => !/email/i.test(x));
+  return /* @__PURE__ */ l.jsxs("div", { className: "al-form", children: [
+    /* @__PURE__ */ l.jsxs("div", { className: "al-nl", children: [
+      /* @__PURE__ */ l.jsx("b", { children: "Describe the alert in plain English" }),
+      /* @__PURE__ */ l.jsx("textarea", { rows: 2, value: txt, maxLength: 600, onChange: (x) => setTxt(x.target.value), placeholder: "e.g. Email me and priya@blend360.com if West gross margin drops below 50% on any day, check at 9am" }),
+      /* @__PURE__ */ l.jsxs("div", { className: "al-row", children: [
+        /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn small ghost-ai", disabled: !txt.trim(), onClick: () => t("alert_parse", { text: txt, spec: sp }, "Cortex is reading your alert…"), children: "✦ Understand" }),
+        /* @__PURE__ */ l.jsx("span", { className: "muted small", children: d.provenance ? `Read by ${d.provenance}. Check the settings below before saving.` : "Cortex fills the settings below from your words; it never writes SQL. Or set them directly." })
+      ] }),
+      d.question && /* @__PURE__ */ l.jsx("div", { className: "al-q", children: d.question })
+    ] }),
+    d.sentence && /* @__PURE__ */ l.jsxs("div", { className: "al-sentence", children: [/* @__PURE__ */ l.jsx("span", { children: "Alert me when" }), /* @__PURE__ */ l.jsx("b", { children: d.sentence }), /* @__PURE__ */ l.jsx("small", { children: `${d.schedule_text} · to ${(sp.recipients || []).join(", ") || "nobody yet"}` })] }),
+    /* @__PURE__ */ l.jsxs("div", { className: "al-grid", children: [
+      /* @__PURE__ */ l.jsxs("label", { children: ["Metric", /* @__PURE__ */ l.jsxs("select", { value: sp.metric || "", onChange: (x) => push({ metric: x.target.value }), children: [/* @__PURE__ */ l.jsx("option", { value: "", children: "Choose…" }), o.metrics.map((m) => /* @__PURE__ */ l.jsx("option", { value: m.id, children: m.label }, m.id))] })] }),
+      rule !== "freshness" && /* @__PURE__ */ l.jsxs("label", { children: ["Period", /* @__PURE__ */ l.jsx("select", { value: sp.grain || "day", onChange: (x) => push({ grain: x.target.value }), children: [["day", "Latest day"], ["week", "Latest week"], ["month", "Latest month"]].map(([k, v]) => /* @__PURE__ */ l.jsx("option", { value: k, children: v }, k)) })] }),
+      /* @__PURE__ */ l.jsxs("div", { className: "al-wide", children: [
+        /* @__PURE__ */ l.jsx("span", { className: "al-lbl", children: "Filters" }),
+        /* @__PURE__ */ l.jsxs("div", { className: "al-chips", children: [
+          Object.entries(flt).flatMap(([k, vs]) => vs.map((v) => /* @__PURE__ */ l.jsxs("span", { className: "al-chip", children: [`${(o.dims.find((x) => x.id === k) || {}).label || k} = ${v}`, /* @__PURE__ */ l.jsx("button", { type: "button", "aria-label": "Remove filter", onClick: () => {
+            const n = { ...flt, [k]: vs.filter((z) => z !== v) };
+            n[k].length || delete n[k], push({ filters: n });
+          }, children: "×" })] }, k + v))),
+          !Object.keys(flt).length && /* @__PURE__ */ l.jsx("span", { className: "muted small", children: "None: the whole semantic view" }),
+          /* @__PURE__ */ l.jsxs("select", { value: fd, onChange: (x) => (setFd(x.target.value), setFv("")), children: [/* @__PURE__ */ l.jsx("option", { value: "", children: "+ Filter by…" }), o.dims.map((x) => /* @__PURE__ */ l.jsx("option", { value: x.id, children: x.label }, x.id))] }),
+          dimOpt && /* @__PURE__ */ l.jsxs("select", { value: fv, onChange: (x) => {
+            const v = x.target.value;
+            v && push({ filters: { ...flt, [fd]: [...new Set([...flt[fd] || [], v])] } }), setFd(""), setFv("");
+          }, children: [/* @__PURE__ */ l.jsx("option", { value: "", children: "value…" }), dimOpt.values.map((v) => /* @__PURE__ */ l.jsx("option", { value: v, children: v }, v))] })
+        ] })
+      ] }),
+      /* @__PURE__ */ l.jsxs("div", { className: "al-wide", children: [
+        /* @__PURE__ */ l.jsx("span", { className: "al-lbl", children: "Rule" }),
+        /* @__PURE__ */ l.jsx("div", { className: "al-seg", children: AL_RULES.map(([k, v]) => /* @__PURE__ */ l.jsx("button", { type: "button", className: rule === k ? "on" : "", disabled: k === "plan" && !met.plan, title: k === "plan" && !met.plan ? "This metric has no plan in the semantic view" : "", onClick: () => push({ rule: k }), children: v }, k)) }),
+        /* @__PURE__ */ l.jsxs("div", { className: "al-params", children: [
+          rule === "threshold" && /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+            /* @__PURE__ */ l.jsx("span", { children: "is" }),
+            /* @__PURE__ */ l.jsx("select", { value: sp.op || "below", onChange: (x) => push({ op: x.target.value }), children: [["below", "below"], ["above", "above"]].map(([k, v]) => /* @__PURE__ */ l.jsx("option", { value: k, children: v }, k)) }),
+            /* @__PURE__ */ l.jsx("input", { type: "number", className: "al-num", defaultValue: sp.value_input ?? "", onBlur: (x) => push({ value_input: x.target.value }) }, "v" + (sp.value_input ?? "")),
+            /* @__PURE__ */ l.jsx("span", { children: pc ? "%" : met.kind === "currency" ? "($)" : "" })
+          ] }),
+          rule === "change" && /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+            /* @__PURE__ */ l.jsx("select", { value: sp.direction || "down", onChange: (x) => push({ direction: x.target.value }), children: [["down", "falls"], ["up", "rises"], ["either", "moves either way"]].map(([k, v]) => /* @__PURE__ */ l.jsx("option", { value: k, children: v }, k)) }),
+            /* @__PURE__ */ l.jsx("span", { children: "by" }),
+            /* @__PURE__ */ l.jsx("input", { type: "number", className: "al-num", defaultValue: sp.pct ?? "", onBlur: (x) => push({ pct: x.target.value }) }, "c" + (sp.pct ?? "")),
+            /* @__PURE__ */ l.jsx("span", { children: pc ? "points or more vs" : "% or more vs" }),
+            /* @__PURE__ */ l.jsx("select", { value: sp.compare || "prior", onChange: (x) => push({ compare: x.target.value }), children: [["prior", "the previous period"], ["year", "the same period last year"]].map(([k, v]) => /* @__PURE__ */ l.jsx("option", { value: k, children: v }, k)) })
+          ] }),
+          rule === "plan" && /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+            /* @__PURE__ */ l.jsx("span", { children: "is" }),
+            /* @__PURE__ */ l.jsx("input", { type: "number", className: "al-num", defaultValue: sp.pct ?? "", onBlur: (x) => push({ pct: x.target.value }) }, "p" + (sp.pct ?? "")),
+            /* @__PURE__ */ l.jsx("span", { children: "% or more" }),
+            /* @__PURE__ */ l.jsx("select", { value: sp.plan_dir || "below", onChange: (x) => push({ plan_dir: x.target.value }), children: [["below", "below plan"], ["above", "above plan"]].map(([k, v]) => /* @__PURE__ */ l.jsx("option", { value: k, children: v }, k)) })
+          ] }),
+          rule === "freshness" && /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+            /* @__PURE__ */ l.jsx("span", { children: "has no new data for more than" }),
+            /* @__PURE__ */ l.jsx("input", { type: "number", min: 1, className: "al-num", defaultValue: sp.days ?? 1, onBlur: (x) => push({ days: x.target.value }) }, "d" + (sp.days ?? 1)),
+            /* @__PURE__ */ l.jsx("span", { children: "day(s)" })
+          ] })
+        ] })
+      ] }),
+      /* @__PURE__ */ l.jsxs("div", { className: "al-wide", children: [
+        /* @__PURE__ */ l.jsx("span", { className: "al-lbl", children: "Check" }),
+        /* @__PURE__ */ l.jsxs("div", { className: "al-params", children: [
+          /* @__PURE__ */ l.jsx("div", { className: "al-seg", children: [["hourly", "Every hour"], ["daily", "Daily"], ["weekly", "Weekly"]].map(([k, v]) => /* @__PURE__ */ l.jsx("button", { type: "button", className: (sch.freq || "daily") === k ? "on" : "", onClick: () => setSch({ freq: k }), children: v }, k)) }),
+          sch.freq === "weekly" && /* @__PURE__ */ l.jsx("select", { value: sch.weekday || 0, onChange: (x) => setSch({ weekday: +x.target.value }), children: AL_DAYS.map((v, k) => /* @__PURE__ */ l.jsx("option", { value: k, children: v }, k)) }),
+          sch.freq !== "hourly" && /* @__PURE__ */ l.jsxs(l.Fragment, { children: [/* @__PURE__ */ l.jsx("span", { children: "at" }), /* @__PURE__ */ l.jsx("select", { value: sch.hour ?? 8, onChange: (x) => setSch({ hour: +x.target.value }), children: Array.from({ length: 24 }, (_, h) => /* @__PURE__ */ l.jsx("option", { value: h, children: `${String(h).padStart(2, "0")}:00` }, h)) })] }),
+          /* @__PURE__ */ l.jsx("span", { className: "muted small", children: sch.tz || alTz() })
+        ] })
+      ] }),
+      /* @__PURE__ */ l.jsxs("div", { className: "al-wide", children: [
+        /* @__PURE__ */ l.jsx("span", { className: "al-lbl", children: "Email to" }),
+        /* @__PURE__ */ l.jsxs("div", { className: "al-chips", children: [
+          (sp.recipients || []).map((r) => /* @__PURE__ */ l.jsxs("span", { className: "al-chip mail", children: [r, /* @__PURE__ */ l.jsx("button", { type: "button", "aria-label": `Remove ${r}`, onClick: () => push({ recipients: (sp.recipients || []).filter((z) => z !== r) }), children: "×" })] }, r)),
+          /* @__PURE__ */ l.jsx("input", { className: "al-mail", value: em, placeholder: "name@company.com, another@company.com", onChange: (x) => setEm(x.target.value), onKeyDown: (x) => (x.key === "Enter" || x.key === ",") && (x.preventDefault(), addMail()), onBlur: addMail })
+        ] }),
+        /* @__PURE__ */ l.jsx("small", { className: "muted", children: "Snowflake emails only people who are users in this account and have verified their email." })
+      ] })
+    ] }),
+    d.issues && d.issues.length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "al-issues", children: [/* @__PURE__ */ l.jsx("b", { children: "To finish this alert:" }), /* @__PURE__ */ l.jsx("ul", { children: d.issues.map((x, k) => /* @__PURE__ */ l.jsx("li", { children: x }, k)) })] }),
+    pv && /* @__PURE__ */ l.jsxs("div", { className: `al-preview ${pv.status}`, children: [
+      /* @__PURE__ */ l.jsx("b", { children: pv.status === "fired" ? "Would fire now" : pv.status === "ok" ? "Would not fire now" : AL_STATUS[pv.status] || pv.status }),
+      /* @__PURE__ */ l.jsx("span", { children: ` · ${pv.headline ? pv.headline + ". " : ""}${pv.detail || ""}` })
+    ] }),
+    pd && String(pd.type || "").startsWith("alert_") && /* @__PURE__ */ l.jsxs("div", { className: "al-fb busy", children: [/* @__PURE__ */ l.jsx("span", { className: "spinner dark" }), pd.label || "Working…"] }),
+    !pd && e.error && /* @__PURE__ */ l.jsx("div", { className: "al-fb err", children: `⚠ ${e.error}` }),
+    !pd && !e.error && e.notice && /* @__PURE__ */ l.jsx("div", { className: "al-fb ok", children: `✓ ${e.notice}` }),
+    /* @__PURE__ */ l.jsxs("div", { className: "al-acts", children: [
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost small", disabled: !sp.metric || blk, title: blk ? "Fill in the items listed above first" : "", onClick: () => t("alert_preview", { spec: sp }, "Checking today's data…"), children: "Test against data" }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost small", disabled: !sp.metric || blk || !(sp.recipients || []).length, title: blk ? "Fill in the items listed above first" : "", onClick: () => t("alert_test", { spec: sp }, "Sending a test email…"), children: "Send test email" }),
+      /* @__PURE__ */ l.jsx("span", { className: "uat-sp" }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost small", onClick: oc, children: "Cancel" }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn small", disabled: d.issues && d.issues.length > 0, onClick: () => t("alert_save", { spec: sp }, "Saving the alert…"), children: d.editing ? "Save changes" : "Create alert" })
+    ] })
+  ] });
+}
+function AlertsPanel({ data: e, send: t }) {
+  const a = e.alerts, [open, setOpen] = P.useState(null), [ig, setIg] = P.useState("");
+  P.useEffect(() => {
+    t("alerts_open", {}, "", !0);
+  }, []);
+  if (!a) return /* @__PURE__ */ l.jsx("div", { className: "muted", children: "Loading alerts…" });
+  const s = a.setup || {};
+  return /* @__PURE__ */ l.jsxs("div", { className: "al-list", children: [
+    /* @__PURE__ */ l.jsxs("div", { className: "al-setup", children: [
+      /* @__PURE__ */ l.jsxs("div", { className: `al-set ${s.integration_found ? "ok" : "bad"}`, children: [
+        /* @__PURE__ */ l.jsx("b", { children: s.integration_found ? `✓ Email ready (${s.integration})` : `✕ Email not set up (${s.integration})` }),
+        /* @__PURE__ */ l.jsx("small", { children: s.integration_found ? "Snowflake sends alert emails through this notification integration." : "An admin runs setup\\admin_alerts_email.sql once. Until then alerts are checked and logged, but not emailed." }),
+        !s.integration_found && /* @__PURE__ */ l.jsxs("span", { className: "al-row", children: [/* @__PURE__ */ l.jsx("input", { value: ig, onChange: (x) => setIg(x.target.value), placeholder: "Integration name, if it has another name" }), /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost small", disabled: !ig.trim(), onClick: () => t("alert_integration", { name: ig }, "Saving…"), children: "Use" })] })
+      ] }),
+      /* @__PURE__ */ l.jsxs("div", { className: `al-set ${s.task_on ? "ok" : "bad"}`, children: [
+        /* @__PURE__ */ l.jsx("b", { children: s.task_on ? "✓ Hourly schedule on" : "✕ Hourly schedule off" }),
+        /* @__PURE__ */ l.jsx("small", { children: s.task_on ? "Task AA_ALERTS_TASK runs every hour and checks each alert when it is due." : "Turn it on to check alerts without opening the app (needs EXECUTE TASK)." }),
+        !s.task_on && /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn small", onClick: () => t("alert_schedule", {}, "Turning on the hourly schedule…"), children: "Turn on hourly schedule" })
+      ] })
+    ] }),
+    /* @__PURE__ */ l.jsxs("div", { className: "al-row", children: [
+      /* @__PURE__ */ l.jsx("b", { children: `${a.items.length} alert${a.items.length === 1 ? "" : "s"}` }),
+      /* @__PURE__ */ l.jsx("span", { className: "uat-sp" }),
+      e.spec && /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost small", onClick: () => t("alert_new", { tz: alTz() }, "Opening…"), children: "+ New alert" }),
+      a.items.length > 0 && /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn small", onClick: () => t("alert_run", {}, "Checking every alert now…"), children: "Check all now" })
+    ] }),
+    !a.items.length && /* @__PURE__ */ l.jsx("div", { className: "uat-empty", children: "No alerts yet. On a dashboard, open a tile's ⋯ menu and choose 🔔 Alert me…" }),
+    a.items.map((x) => {
+      const st = !x.active ? "paused" : x.last_status || "new", runs = (a.runs || {})[x.alert_id];
+      return /* @__PURE__ */ l.jsxs("div", { className: "al-item", children: [
+        /* @__PURE__ */ l.jsxs("div", { className: "al-i1", children: [
+          /* @__PURE__ */ l.jsx("b", { children: x.sentence }),
+          /* @__PURE__ */ l.jsx("small", { children: `${x.dashboard_name || x.semantic_view} · ${x.schedule_text} · to ${x.recipients.join(", ")}` })
+        ] }),
+        /* @__PURE__ */ l.jsxs("div", { className: "al-i2", children: [
+          /* @__PURE__ */ l.jsx("span", { children: x.last_check_at ? alWhen(x.last_check_at) : "Not checked yet" }),
+          x.value_text && /* @__PURE__ */ l.jsx("small", { children: x.value_text })
+        ] }),
+        /* @__PURE__ */ l.jsx("span", { className: `al-pill ${st}`, children: st === "paused" ? "Paused" : st === "new" ? "New" : AL_STATUS[st] || st }),
+        /* @__PURE__ */ l.jsxs("div", { className: "al-acts2", children: [
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "uat-link", onClick: () => t("alert_run", { alert_id: x.alert_id }, "Checking…"), children: "Check now" }),
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "uat-link", onClick: () => open === x.alert_id ? setOpen(null) : (setOpen(x.alert_id), t("alert_runs", { alert_id: x.alert_id }, "", !0)), children: open === x.alert_id ? "Hide history" : "History" }),
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "uat-link", onClick: () => t("alert_edit", { alert_id: x.alert_id }, "Opening…"), children: "Edit" }),
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "uat-link", onClick: () => t("alert_toggle", { alert_id: x.alert_id, active: !x.active }, "Saving…"), children: x.active ? "Pause" : "Resume" }),
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "uat-link danger", onClick: () => t("alert_delete", { alert_id: x.alert_id }, "Deleting…"), children: "Delete" })
+        ] }),
+        x.last_message && /* @__PURE__ */ l.jsx("div", { className: "al-msg", children: x.last_message }),
+        open === x.alert_id && /* @__PURE__ */ l.jsx("div", { className: "al-runs", children: !runs ? "Loading…" : !runs.length ? "No checks yet." : runs.map((r, k) => /* @__PURE__ */ l.jsxs("div", { className: "al-run", children: [
+          /* @__PURE__ */ l.jsx("span", { children: alWhen(r.checked_at) }),
+          /* @__PURE__ */ l.jsx("span", { className: `al-pill ${r.status}`, children: AL_STATUS[r.status] || r.status }),
+          /* @__PURE__ */ l.jsx("span", { children: r.emailed ? "✉ emailed" : "" }),
+          /* @__PURE__ */ l.jsx("small", { children: `${r.trigger_kind} · ${r.period_label || ""} · ${r.message || ""}` })
+        ] }, k)) })
+      ] }, x.alert_id);
+    }),
+    /* @__PURE__ */ l.jsx("p", { className: "muted small", children: "Alerts run governed queries on the semantic view (stored with each alert) and email through Snowflake's SYSTEM$SEND_EMAIL. Each breach is emailed once per period. History is in AA_ALERT_RUNS." })
   ] });
 }
 function UatDownload({ d: e, send: t }) {
