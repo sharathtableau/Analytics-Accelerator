@@ -1,0 +1,84 @@
+definition_version: 2
+entities:
+  analytics_accelerator_enterprise:
+    type: streamlit
+    identifier:
+      name: ANALYTICS_ACCELERATOR_ENTERPRISE
+      database: WBR_DB
+      schema: ANALYTICS_ENTERPRISE
+    title: "Analytics Accelerator - Enterprise"
+    query_warehouse: POWERHOUSE
+    runtime_name: SYSTEM$ST_CONTAINER_RUNTIME_PY3_11
+    compute_pool: SYSTEM_COMPUTE_POOL_CPU
+    main_file: app.py
+    artifacts:
+      - app.py
+      - config.py
+      - layout_catalog.py
+      - semantic_catalog.py
+      - semantic_query.py
+      - semantic_builder.py
+      - semantic_multi.py
+      - table_finder.py
+      - validation.py
+      - headlines.py
+      - chart_tiles.py
+      - themes.py
+      - uat.py
+      - uat_export.py
+      - xlsx_lite.py
+      - persona_tiles.py
+      - persona_layouts.py
+      - metric_drafter.py
+      - custom_metrics.py
+      - inventory.py
+      - engine.py
+      - composer.py
+      - home.py
+      - ai_services.py
+      - agent_service.py
+      - store.py
+      - app_bundle.js
+      - app_styles.css
+  analytics_accelerator_portal:
+    type: streamlit
+    identifier:
+      name: ANALYTICS_ACCELERATOR_PORTAL
+      database: WBR_DB
+      schema: ANALYTICS_ENTERPRISE
+    title: "Analytics Accelerator Portal"
+    query_warehouse: POWERHOUSE
+    runtime_name: SYSTEM$ST_CONTAINER_RUNTIME_PY3_11
+    compute_pool: SYSTEM_COMPUTE_POOL_CPU
+    main_file: portal.py
+    artifacts:
+      - portal.py
+      - portal_view.py
+      - app.py
+      - config.py
+      - layout_catalog.py
+      - semantic_catalog.py
+      - semantic_query.py
+      - semantic_builder.py
+      - semantic_multi.py
+      - table_finder.py
+      - validation.py
+      - headlines.py
+      - chart_tiles.py
+      - themes.py
+      - uat.py
+      - uat_export.py
+      - xlsx_lite.py
+      - persona_tiles.py
+      - persona_layouts.py
+      - metric_drafter.py
+      - custom_metrics.py
+      - inventory.py
+      - engine.py
+      - composer.py
+      - home.py
+      - ai_services.py
+      - agent_service.py
+      - store.py
+      - app_bundle.js
+      - app_styles.css

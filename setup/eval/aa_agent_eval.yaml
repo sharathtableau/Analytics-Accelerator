@@ -1,0 +1,31 @@
+# Cortex Agent evaluation (Snowflake AI Observability) for the Harborline retail agent.
+# Uploaded to @WBR_DB.ANALYTICS_ENTERPRISE.AA_EVAL_CONFIG by setup\run_agent_eval.cmd.
+evaluation:
+  agent_params:
+    agent_name: "WBR_DB.ANALYTICS_ENTERPRISE.AA_RETAIL_ANALYTICS_SV_AGENT"
+    agent_type: "CORTEX AGENT"
+  run_params:
+    label: "Analytics Accelerator - retail agent quality gate"
+    description: "Data + documents questions from the demo playbook"
+  source_metadata:
+    type: "dataset"
+    dataset_name: "WBR_DB.ANALYTICS_ENTERPRISE.AA_RETAIL_AGENT_EVALSET"
+
+metrics:
+  - "answer_correctness"
+  - "logical_consistency"
+  - "tool_selection_accuracy"
+  - name: "cites_sources"
+    model: "claude-sonnet-4-5"
+    score_ranges:
+      min_score: [1, 3]
+      median_score: [4, 6]
+      max_score: [7, 10]
+    prompt: |
+      You are grading a retail analytics assistant.
+      Question: {{input}}
+      Answer: {{output}}
+      Expected: {{ground_truth}}
+      Score 7-10 if the answer separates what comes from data from what comes from documents and cites the
+      expected document ID(s) when the question asks why, what a policy is, or what a metric means; 4-6 if it
+      answers correctly but cites nothing or the wrong document; 1-3 if it invents numbers or causes.

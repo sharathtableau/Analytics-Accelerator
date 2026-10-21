@@ -1,0 +1,15 @@
+definition_version: 2
+entities:
+  aa_gateway_probe:
+    type: streamlit
+    identifier:
+      name: AA_GATEWAY_PROBE
+      database: WBR_DB
+      schema: ANALYTICS_ENTERPRISE
+    title: "AI Gateway probe (test only)"
+    query_warehouse: POWERHOUSE
+    runtime_name: SYSTEM$ST_CONTAINER_RUNTIME_PY3_11
+    compute_pool: SYSTEM_COMPUTE_POOL_CPU
+    main_file: gateway_probe.py
+    artifacts:
+      - gateway_probe.py

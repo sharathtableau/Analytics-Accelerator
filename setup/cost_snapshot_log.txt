@@ -1,0 +1,125 @@
+====================================================================================================
+1) Cortex AI functions (AI_COMPLETE, AI_AGG...) by app feature: calls, tokens, credits
+====================================================================================================
+FAILED (exit 1)
+WITH h AS ( SELECT * FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY WHERE START_TIME >= DATEADD('day', -30, CURRENT_TIMESTAMP()) AND TRY_PARSE_JSON(QUERY_TAG):app::STRING = 'aa-enterprise'), t AS ( SELECT h.QUERY_ID, h.START_TIME, h.FUNCTION_NAME, h.MODEL_NAME, SUM(IFF(m.value🔑metric::STRING IN ('input', 'total'), m.value:value::NUMBER, 0)) AS IN_TOK, SUM(IFF(m.value🔑metric::STRING = 'output', m.value:value::NUMBER, 0)) AS OUT_TOK FROM h, LATERAL FLATTEN(INPUT => h.METRICS, OUTER => TRUE) m GROUP BY 1, 2, 3, 4) SELECT COALESCE(TRY_PARSE_JSON(h.QUERY_TAG):feature::STRING, 'other') AS FEATURE, h.FUNCTION_NAME, h.MODEL_NAME, COUNT(DISTINCT h.QUERY_ID) AS CALLS, ROUND(SUM(t.IN_TOK) / NULLIF(COUNT(DISTINCT h.QUERY_ID), 0)) AS AVG_INPUT_TOKENS, ROUND(SUM(t.OUT_TOK) / NULLIF(COUNT(DISTINCT h.QUERY_ID), 0)) AS AVG_OUTPUT_TOKENS, ROUND(SUM(h.CREDITS), 4) AS AI_CREDITS, ROUND(SUM(h.CREDITS) / NULLIF(COUNT(DISTINCT h.QUERY_ID), 0), 5) AS AI_CREDITS_PER_CALL FROM h JOIN t ON t.QUERY_ID = h.QUERY_ID AND t.START_TIME = h.START_TIME AND t.FUNCTION_NAME = h.FUNCTION_NAME AND COALESCE(t.MODEL_NAME, '') = COALESCE(h.MODEL_NAME, '') GROUP BY 1, 2, 3 ORDER BY AI_CREDITS DESC
+┌─ Error ─────────────────────────────────────────────────────────────────────┐
+│ 002003 (02000): 01c77218-041f-4190-0000-308135737322: SQL compilation       │
+│ error:                                                                      │
+│ Schema 'SNOWFLAKE.ACCOUNT_USAGE' does not exist or not authorized.          │
+└─────────────────────────────────────────────────────────────────────────────┘
+====================================================================================================
+2) Cortex Agent questions (the app's agents are named AA_...): requests, tokens, credits per question
+====================================================================================================
+FAILED (exit 1)
+SELECT AGENT_NAME, COUNT(*) AS REQUESTS, ROUND(AVG(TOKENS)) AS AVG_TOKENS_PER_REQUEST, ROUND(SUM(TOKEN_CREDITS), 4) AS AI_CREDITS, ROUND(AVG(TOKEN_CREDITS), 5) AS AI_CREDITS_PER_REQUEST, ROUND(SUM(METADATA:sql_query_credits::FLOAT), 4) AS WAREHOUSE_CREDITS_FOR_AGENT_SQL FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY WHERE START_TIME >= DATEADD('day', -30, CURRENT_TIMESTAMP()) AND STARTSWITH(UPPER(AGENT_NAME), 'AA_') GROUP BY 1 ORDER BY AI_CREDITS DESC
+┌─ Error ─────────────────────────────────────────────────────────────────────┐
+│ 002003 (02000): 01c77218-041f-3527-0000-308135736dee: SQL compilation       │
+│ error:                                                                      │
+│ Schema 'SNOWFLAKE.ACCOUNT_USAGE' does not exist or not authorized.          │
+└─────────────────────────────────────────────────────────────────────────────┘
+====================================================================================================
+3) Agent tokens split by service and model (orchestration vs Cortex Analyst)
+====================================================================================================
+FAILED (exit 1)
+SELECT g.value:service_type::STRING AS SERVICE, g.value:model::STRING AS MODEL, COUNT(DISTINCT a.REQUEST_ID) AS REQUESTS, ROUND(AVG(g.value:input::NUMBER)) AS AVG_INPUT, ROUND(AVG(g.value:cache_read_input::NUMBER)) AS AVG_CACHE_READ, ROUND(AVG(g.value:output::NUMBER)) AS AVG_OUTPUT FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY a, LATERAL FLATTEN(INPUT => a.TOKENS_GRANULAR) g WHERE a.START_TIME >= DATEADD('day', -30, CURRENT_TIMESTAMP()) AND STARTSWITH(UPPER(a.AGENT_NAME), 'AA_') GROUP BY 1, 2 ORDER BY 1, 2
+┌─ Error ─────────────────────────────────────────────────────────────────────┐
+│ 002003 (02000): 01c77218-041f-3527-0000-308135736eba: SQL compilation       │
+│ error:                                                                      │
+│ Schema 'SNOWFLAKE.ACCOUNT_USAGE' does not exist or not authorized.          │
+└─────────────────────────────────────────────────────────────────────────────┘
+====================================================================================================
+4) Warehouse compute by app feature (SEMANTIC_VIEW queries, ML, etc.)
+====================================================================================================
+FAILED (exit 1)
+SELECT COALESCE(TRY_PARSE_JSON(QUERY_TAG):feature::STRING, 'other') AS FEATURE, COUNT(*) AS QUERIES, ROUND(SUM(CREDITS_ATTRIBUTED_COMPUTE), 4) AS WAREHOUSE_CREDITS FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_ATTRIBUTION_HISTORY WHERE START_TIME >= DATEADD('day', -30, CURRENT_TIMESTAMP()) AND TRY_PARSE_JSON(QUERY_TAG):app::STRING = 'aa-enterprise' GROUP BY 1 ORDER BY WAREHOUSE_CREDITS DESC
+┌─ Error ─────────────────────────────────────────────────────────────────────┐
+│ 002003 (02000): 01c77218-041f-4190-0000-3081357375f2: SQL compilation       │
+│ error:                                                                      │
+│ Schema 'SNOWFLAKE.ACCOUNT_USAGE' does not exist or not authorized.          │
+└─────────────────────────────────────────────────────────────────────────────┘
+====================================================================================================
+5) Cortex Search serving cost for the retail documents
+====================================================================================================
+FAILED (exit 1)
+SELECT SERVICE_NAME, CONSUMPTION_TYPE, ROUND(SUM(CREDITS), 4) AS CREDITS FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_SEARCH_DAILY_USAGE_HISTORY WHERE USAGE_DATE >= DATEADD('day', -30, CURRENT_DATE()) GROUP BY 1, 2 ORDER BY CREDITS DESC
+┌─ Error ─────────────────────────────────────────────────────────────────────┐
+│ 002003 (02000): 01c77218-041f-3527-0000-308135738082: SQL compilation       │
+│ error:                                                                      │
+│ Schema 'SNOWFLAKE.ACCOUNT_USAGE' does not exist or not authorized.          │
+└─────────────────────────────────────────────────────────────────────────────┘
+====================================================================================================
+6) What the app recorded itself (no lag): AI runs per feature and average time
+====================================================================================================
+SELECT FEATURE, COUNT(*) AS RUNS, ROUND(AVG(LATENCY_S), 1) AS AVG_SECONDS, ROUND(AVG(LENGTH(OUTPUT))) AS AVG_OUTPUT_CHARS FROM WBR_DB.ANALYTICS_ENTERPRISE.AA_AI_RUNS WHERE CREATED_AT >= DATEADD('day', -30, CURRENT_TIMESTAMP()) GROUP BY 1 ORDER BY RUNS DESC
++---------------------------------------------------------------+
+| FEATURE               | RUNS | AVG_SECONDS | AVG_OUTPUT_CHARS |
+|-----------------------+------+-------------+------------------|
+| page_summary          | 28   | 5.0         | 617              |
+| persona_slots         | 14   | 6.2         | 1074             |
+| layout_compose        | 12   | 22.3        | 4000             |
+| home_suggestions      | 11   | 23.7        | 4000             |
+| agent_question        | 6    | 33.3        | 1654             |
+| layout_new_page       | 5    | 10.3        | 2039             |
+| layout_recommendation | 3    | 1.9         | 183              |
+| layout_page           | 3    | 9.8         | 2688             |
+| tile_question         | 1    | 64.3        | 3034             |
+| semantic_view_draft   | 1    | 32.1        | 3900             |
+| layout_add_tile       | 1    | 4.3         | 362              |
+| prompt_routing        | 1    | 6.8         | 661              |
++---------------------------------------------------------------+
+====================================================================================================
+7) Agent tokens per question from AI Observability (no ACCOUNT_USAGE needed: owner of the agent + CORTEX_USER)
+====================================================================================================
+SELECT f.key AS TOKEN_FIELD, COUNT(DISTINCT e.TRACE:trace_id::STRING) AS TRACES, COUNT(*) AS SPANS, SUM(TRY_TO_NUMBER(f.value::STRING)) AS TOTAL_TOKENS, ROUND(SUM(TRY_TO_NUMBER(f.value::STRING)) / NULLIF(COUNT(DISTINCT e.TRACE:trace_id::STRING), 0)) AS TOKENS_PER_QUESTION FROM TABLE(SNOWFLAKE.LOCAL.GET_AI_OBSERVABILITY_EVENTS('WBR_DB', 'ANALYTICS_ENTERPRISE', 'AA_RETAIL_ANALYTICS_SV_AGENT', 'CORTEX AGENT')) e, LATERAL FLATTEN(INPUT => e.RECORD_ATTRIBUTES) f WHERE f.key ILIKE '%token%' GROUP BY 1 ORDER BY 1
++-----------------------------------------------------------------------------------------------------------------------------------+
+| TOKEN_FIELD                                                                 | TRACES | SPANS | TOTAL_TOKENS | TOKENS_PER_QUESTION |
+|-----------------------------------------------------------------------------+--------+-------+--------------+---------------------|
+| snow.ai.observability.agent.planning.token_count.cache_read_input           | 3      | 14    | 350162       | 116721              |
+| snow.ai.observability.agent.planning.token_count.cache_write_input          | 3      | 14    | 119751       | 39917               |
+| snow.ai.observability.agent.planning.token_count.input                      | 3      | 14    | 469941       | 156647              |
+| snow.ai.observability.agent.planning.token_count.output                     | 3      | 14    | 6640         | 2213                |
+| snow.ai.observability.agent.planning.token_count.plan                       | 3      | 14    | 14379        | 4793                |
+| snow.ai.observability.agent.planning.token_count.total                      | 3      | 14    | 476581       | 158860              |
+| snow.ai.observability.agent.suggested_queries.token_count.cache_read_input  | 3      | 3     | 119751       | 39917               |
+| snow.ai.observability.agent.suggested_queries.token_count.cache_write_input | 3      | 3     | 9852         | 3284                |
+| snow.ai.observability.agent.suggested_queries.token_count.input             | 3      | 3     | 129606       | 43202               |
+| snow.ai.observability.agent.suggested_queries.token_count.output            | 3      | 3     | 430          | 143                 |
+| snow.ai.observability.agent.suggested_queries.token_count.total             | 3      | 3     | 130036       | 43345               |
+| snow.ai.observability.token_count.cache_read_input                          | 0      | 3     | 469913       | None                |
+| snow.ai.observability.token_count.cache_write_input                         | 0      | 3     | 129603       | None                |
+| snow.ai.observability.token_count.input                                     | 0      | 3     | 599547       | None                |
+| snow.ai.observability.token_count.output                                    | 0      | 3     | 7070         | None                |
+| snow.ai.observability.token_count.total                                     | 0      | 3     | 606617       | None                |
++-----------------------------------------------------------------------------------------------------------------------------------+
+====================================================================================================
+8) Output tokens per AI feature, counted with AI_COUNT_TOKENS on what the app logged (compute only, not billed per token)
+====================================================================================================
+SELECT FEATURE, COUNT(*) AS RUNS, ROUND(AVG(AI_COUNT_TOKENS('ai_complete', 'claude-sonnet-4-5', OUTPUT))) AS AVG_OUTPUT_TOKENS, SUM(IFF(LENGTH(OUTPUT) >= 3990, 1, 0)) AS RUNS_WITH_LOG_CUT_AT_4000_CHARS FROM WBR_DB.ANALYTICS_ENTERPRISE.AA_AI_RUNS WHERE CREATED_AT >= DATEADD('day', -30, CURRENT_TIMESTAMP()) AND OUTPUT IS NOT NULL AND LENGTH(OUTPUT) > 0 GROUP BY 1 ORDER BY RUNS DESC
++------------------------------------------------------------------------------------+
+| FEATURE               | RUNS | AVG_OUTPUT_TOKENS | RUNS_WITH_LOG_CUT_AT_4000_CHARS |
+|-----------------------+------+-------------------+---------------------------------|
+| page_summary          | 28   | 175               | 0                               |
+| persona_slots         | 14   | 349               | 0                               |
+| layout_compose        | 12   | 1311              | 12                              |
+| home_suggestions      | 11   | 1102              | 11                              |
+| agent_question        | 6    | 423               | 0                               |
+| layout_new_page       | 5    | 667               | 0                               |
+| layout_recommendation | 3    | 62                | 0                               |
+| layout_page           | 3    | 885               | 0                               |
+| tile_question         | 1    | 779               | 0                               |
+| layout_add_tile       | 1    | 118               | 0                               |
+| prompt_routing        | 1    | 184               | 0                               |
+| semantic_view_draft   | 1    | 1146              | 0                               |
++------------------------------------------------------------------------------------+
+====================================================================================================
+9) MEASURED tokens per feature, as reported by Snowflake to the app (AI_COMPLETE show_details and the agent
+====================================================================================================
+WITH r AS ( SELECT FEATURE, CREATED_AT, TRY_TO_NUMBER(REGEXP_SUBSTR(PROVENANCE, 'tokens ([0-9]+) in', 1, 1, 'e', 1)) AS IN_TOK, TRY_TO_NUMBER(REGEXP_SUBSTR(PROVENANCE, 'tokens [0-9]+ in / ([0-9]+) out', 1, 1, 'e', 1)) AS OUT_TOK, COALESCE(TRY_TO_NUMBER(REGEXP_SUBSTR(PROVENANCE, 'out / ([0-9]+) cache_read', 1, 1, 'e', 1)), 0) AS CACHE_TOK FROM WBR_DB.ANALYTICS_ENTERPRISE.AA_AI_RUNS WHERE CREATED_AT >= DATEADD('day', -30, CURRENT_TIMESTAMP()) AND REGEXP_LIKE(PROVENANCE, '.*tokens [0-9]+ in / [0-9]+ out.*')), p AS ( SELECT FEATURE, IN_TOK, OUT_TOK, CACHE_TOK, IFF(FEATURE IN ('agent_question', 'tile_question'), ((IN_TOK - CACHE_TOK) * 1.95 + CACHE_TOK * 0.20 + OUT_TOK * 9.76) / 1e6, (IN_TOK * 1.80 + OUT_TOK * 9.00) / 1e6) AS CREDITS FROM r) SELECT FEATURE, COUNT(*) AS RUNS, ROUND(AVG(IN_TOK)) AS AVG_IN_TOKENS, ROUND(AVG(CACHE_TOK)) AS AVG_CACHE_READ, ROUND(AVG(OUT_TOK)) AS AVG_OUT_TOKENS, ROUND(AVG(CREDITS), 5) AS AI_CREDITS_PER_RUN, ROUND(AVG(CREDITS) * 2.00, 4) AS USD_PER_RUN_LIST FROM p GROUP BY 1 ORDER BY USD_PER_RUN_LIST DESC
++------------------------------------------------------------------------------------------------------------------+
+| FEATURE         | RUNS | AVG_IN_TOKENS | AVG_CACHE_READ | AVG_OUT_TOKENS | AI_CREDITS_PER_RUN | USD_PER_RUN_LIST |
+|-----------------+------+---------------+----------------+----------------+--------------------+------------------|
+| agent_question  | 1    | 175359        | 132052         | 2328           | 0.13358            | 0.2672           |
+| layout_new_page | 1    | 5028          | 0              | 594            | 0.01440            | 0.0288           |
+| persona_slots   | 1    | 2297          | 0              | 207            | 0.00600            | 0.0120           |
++------------------------------------------------------------------------------------------------------------------+

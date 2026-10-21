@@ -1,0 +1,2 @@
+PUT 'file://C:/Users/SharathKumarKammari/Downloads/snowflake-react-app-runtime/Analytics_Accelerator_Enterprise_Claude/setup/retail/docs/pdf/*.pdf' @WBR_DB.RETAIL_DEMO.RETAIL_DOCS_STAGE AUTO_COMPRESS = FALSE OVERWRITE = TRUE;
+PUT 'file://C:/Users/SharathKumarKammari/Downloads/snowflake-react-app-runtime/Analytics_Accelerator_Enterprise_Claude/setup/retail/docs/*.md' @WBR_DB.RETAIL_DEMO.RETAIL_DOCS_STAGE AUTO_COMPRESS = FALSE OVERWRITE = TRUE;
