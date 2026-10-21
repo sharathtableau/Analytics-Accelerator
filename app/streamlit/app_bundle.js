@@ -9320,6 +9320,42 @@ let Wp = 0;
 const qp = () => `${Date.now().toString(36)}-${Wp += 1}`;
 function Hp({ data: e, emit: t }) {
   const [n, s] = P.useState(null), [r, i] = P.useState(null), [a, u] = P.useState(null), o = P.useRef(e.revision), RT = P.useRef(null);
+  /* popups open where the person clicked (the app is one tall page inside Snowsight, so "centre" is often off screen) */
+  const clickY = P.useRef(90), clickBtn = P.useRef(null), anchor = P.useRef({ r: null, y: 90 });
+  /* which part of the app is on screen: the app is one tall frame, so we watch 100px strips with IntersectionObserver */
+  const vis = P.useRef(null), VS = P.useRef(null);
+  P.useEffect(() => {
+    const el = RT.current, box = VS.current;
+    if (!el || !box || typeof IntersectionObserver === "undefined") return;
+    const STEP = 100, seen = new Map();
+    const ob = new IntersectionObserver((es) => {
+      es.forEach((x) => {
+        const k = +x.target.dataset.i;
+        x.isIntersecting ? seen.set(k, [k * STEP + x.intersectionRect.top - x.boundingClientRect.top, x.intersectionRect.height]) : seen.delete(k);
+      });
+      if (!seen.size) return void (vis.current = null);
+      let t = 1e9, btm = 0;
+      seen.forEach(([a0, h]) => (t = Math.min(t, a0), btm = Math.max(btm, a0 + h)));
+      vis.current = { top: t, height: btm - t };
+    }, { threshold: [0, 0.2, 0.4, 0.6, 0.8, 1] });
+    let n = 0;
+    const build = () => {
+      const want = Math.ceil(el.offsetHeight / STEP);
+      if (want === n) return;
+      ob.disconnect(), seen.clear(), box.textContent = "", n = want;
+      for (let k = 0; k < n; k++) {
+        const d = document.createElement("i");
+        d.dataset.i = k, d.style.top = `${k * STEP}px`, d.style.height = `${STEP}px`;
+        box.appendChild(d), ob.observe(d);
+      }
+    };
+    build();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(build) : null;
+    ro && ro.observe(el);
+    return () => (ob.disconnect(), ro && ro.disconnect());
+  }, []);
+  if (r && anchor.current.r !== r) anchor.current = { r, y: clickY.current, btn: clickBtn.current, vis: vis.current };
+  if (!r) anchor.current.r = null;
   P.useEffect(() => {
     const el = RT.current;
     if (!n || !el) return;
@@ -9355,7 +9391,14 @@ function Hp({ data: e, emit: t }) {
       );
     }
   }, v = e.step, j = { home: !0, review: !!e.draft, source: !0, metrics: !!e.source, layout: !!e.profile, workspace: !!e.spec };
-  return /* @__PURE__ */ l.jsxs("div", { className: "aa", ref: RT, children: [
+  return /* @__PURE__ */ l.jsxs("div", { className: "aa", ref: RT, onPointerDownCapture: (ev) => {
+    const el = RT.current;
+    if (!el) return;
+    const rb = el.getBoundingClientRect(), bt = ev.target && ev.target.closest ? ev.target.closest("button") : null, bb = bt ? bt.getBoundingClientRect() : null;
+    clickY.current = ev.clientY - rb.top;
+    clickBtn.current = bb ? { bottom: bb.bottom - rb.top, right: rb.right - bb.right } : null;
+  }, children: [
+    /* @__PURE__ */ l.jsx("div", { ref: VS, className: "aa-vis", "aria-hidden": "true" }),
     /* @__PURE__ */ l.jsxs("aside", { className: "rail", children: [
       /* @__PURE__ */ l.jsxs("div", { className: "brand", children: [
         /* @__PURE__ */ l.jsx("span", { className: "flake", children: "❄" }),
@@ -9463,6 +9506,11 @@ function Hp({ data: e, emit: t }) {
       {
         title: { agent: "Cortex Agent", decisions: "Decisions", governance: "Governance & AI quality", builder: "Connect a table · semantic view drafted by Cortex", theme: "Company theme", requests: "Change requests", recheck: "Waiting for my sign-off" }[r],
         wide: r === "builder" || r === "theme" || r === "requests" || r === "recheck",
+        top: anchor.current.y,
+        vis: anchor.current.vis,
+        btn: anchor.current.btn,
+        rootH: RT.current ? RT.current.offsetHeight : 0,
+        side: r === "agent" ? "right" : "center",
         onClose: () => i(null),
         children: [
           e.error && r !== "governance" && /* @__PURE__ */ l.jsx("div", { className: "alert error small drawer-err", children: e.error }),
@@ -10395,11 +10443,28 @@ function Zp({ data: e, send: t }) {
     }) })
   ] });
 }
-function _p({ title: e, children: t, onClose: n, wide: s }) {
-  return /* @__PURE__ */ l.jsx("div", { className: "drawer-wrap", onClick: n, children: /* @__PURE__ */ l.jsxs("div", { className: `drawer ${s ? "wide" : ""}`, onClick: (r) => r.stopPropagation(), children: [
+function _p({ title: e, children: t, onClose: n, wide: s, top: tp, rootH: rh, side: sd, vis: vs, btn: bn }) {
+  P.useEffect(() => {
+    const k = (ev) => ev.key === "Escape" && n();
+    document.addEventListener("keydown", k);
+    return () => document.removeEventListener("keydown", k);
+  }, [n]);
+  let H = sd === "center" ? 720 : 640;
+  const v = vs && vs.height > 200 && (tp == null || tp >= vs.top - 4 && tp <= vs.top + vs.height + 4) ? vs : null;   // on-screen part of the app; ignored if it disagrees with the click
+  if (v) H = Math.max(380, Math.min(H, v.height - 24));
+  const lo = v ? v.top + 12 : 12, hi = Math.min(rh ? rh - H - 12 : 1e9, v ? v.top + v.height - H - 12 : 1e9);
+  let y = Math.max(12, Math.max(lo, Math.min((tp == null ? 90 : tp) - 40, hi)));
+  const pin = sd === "right" && bn;                     // the agent drops down under the button that opened it
+  if (pin) {
+    y = bn.bottom + 8;
+    const room2 = (v ? v.top + v.height : rh || 1e9) - y - 12;
+    if (room2 >= 380) H = Math.min(H, room2);
+    else y = Math.max(12, Math.min(y, (rh || 1e9) - H - 12));
+  }
+  return /* @__PURE__ */ l.jsx("div", { className: "drawer-wrap anchored", onClick: n, children: /* @__PURE__ */ l.jsxs("div", { className: `drawer ${s ? "wide" : ""} at-${sd || "center"}`, style: { top: `${y}px`, "--dh": `${H}px`, ...(sd === "right" ? { right: `${pin ? Math.max(12, bn.right) : 24}px` } : {}) }, role: "dialog", "aria-label": e, onClick: (r) => r.stopPropagation(), children: [
     /* @__PURE__ */ l.jsxs("div", { className: "drawer-head", children: [
       /* @__PURE__ */ l.jsx("b", { children: e }),
-      /* @__PURE__ */ l.jsx("button", { type: "button", className: "x", onClick: n, children: "×" })
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "x", "aria-label": "Close", title: "Close (Esc)", onClick: n, children: "×" })
     ] }),
     /* @__PURE__ */ l.jsx("div", { className: "drawer-body", children: t })
   ] }) });

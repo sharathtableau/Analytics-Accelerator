@@ -706,3 +706,15 @@
 .uat-age.old{color:#a12c1a;font-weight:700}
 .aa .uat-open{border:1px solid #1f6fd1;color:#1f6fd1;background:#fff;border-radius:7px;padding:6px 11px;font-size:12.5px;font-weight:600;white-space:nowrap;cursor:pointer}
 @media (max-width:900px){.uat-ir{grid-template-columns:1fr 1fr}}
+
+/* 21 Oct: popups open where you clicked (left-docked for the Cortex Agent), fixed height, light shade */
+.aa .drawer-wrap.anchored{display:block!important;position:absolute;inset:0;padding:0;background:rgba(9,25,45,.14);z-index:32}
+.aa .drawer-wrap.anchored .drawer{position:absolute;height:var(--dh,640px)!important;max-height:none!important;display:flex;flex-direction:column}
+.aa .drawer-wrap.anchored .drawer.at-left{left:252px;width:min(620px,calc(100% - 264px))!important}
+.aa .drawer-wrap.anchored .drawer.at-center{left:0;right:0;margin:0 auto}
+.aa .drawer-wrap.anchored .drawer-body{flex:1;min-height:0;max-height:none!important;overflow:auto}
+.aa .drawer-wrap.anchored .drawer.at-right{left:auto;width:min(620px,calc(100% - 264px))!important;animation:aa-pop .18s var(--ease-snap,cubic-bezier(.16,1,.3,1)) both}
+@media (max-width:900px){.aa .drawer-wrap.anchored .drawer.at-right{right:10px!important;width:calc(100% - 20px)!important}}
+@media (max-width:900px){.aa .drawer-wrap.anchored .drawer.at-left{left:10px;width:calc(100% - 20px)!important}}
+.aa .aa-vis{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:0}
+.aa .aa-vis>i{position:absolute;left:0;width:1px;display:block}
