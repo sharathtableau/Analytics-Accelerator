@@ -123,9 +123,9 @@ class DeployManifestTests(unittest.TestCase):
     def test_every_local_module_is_deployed(self):
         import re
         root = HERE.parent / "streamlit"
-        yml = (root / "snowflake.yml").read_text()
+        yml = (root / "snowflake.yml").read_text(encoding="utf-8")
         for f in root.glob("*.py"):
-            for mod in re.findall(r"^(?:from|import) (\w+)", f.read_text(), re.M):
+            for mod in re.findall(r"^(?:from|import) (\w+)", f.read_text(encoding="utf-8"), re.M):
                 if (root / f"{mod}.py").exists():
                     self.assertIn(f"- {mod}.py", yml, f"{mod}.py missing from snowflake.yml artifacts")
 

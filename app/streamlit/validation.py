@@ -139,17 +139,46 @@ def _cols(value: Any) -> list[str]:
 NON_ADD_IN_EXPR = re.compile(r"\s*NON\s+ADDITIVE\s+BY\s*\(([^)]*)\)\s*(?:AS\s+)?", re.I)
 
 
+_NA_WORDS = {"DIMENSION", "DIMENSIONS", "NAME", "SORT", "ORDER", "SORT_ORDER", "NULLS", "NULLS_ORDER", "ASC", "DESC",
+             "FIRST", "LAST", "EXPRESSION", "COLUMN", "DIRECTION", "TRUE", "FALSE", "NULL"}
+
+
 def _non_additive(text: str) -> list[tuple[str, str, bool]]:
-    """'(dates.calendar_date DESC)' / '["DATES.CALENDAR_DATE"]' -> [(ENTITY, NAME, descending)]"""
+    """'(dates.calendar_date DESC)' / '["DATES.CALENDAR_DATE"]' / '[{"dimension":"DATES.CALENDAR_DATE","sort":"DESC"}]'
+    -> [(ENTITY, NAME, descending)]. Key words of the JSON form (DIMENSION, SORT, ...) are never taken as names."""
+    raw = str(text or "").strip()
+    try:
+        data = json.loads(raw) if raw[:1] in "[{" else None
+    except ValueError:
+        data = None
+    if isinstance(data, (list, dict)):
+        out = []
+        for it in (data if isinstance(data, list) else [data]):
+            if isinstance(it, dict):
+                low = {str(k).lower(): v for k, v in it.items()}
+                ref = next((low[k] for k in ("dimension", "name", "expression", "column", "dimension_name") if low.get(k)), None)
+                if ref is None:
+                    ref = next((v for v in low.values() if isinstance(v, str) and str(v).upper() not in _NA_WORDS), "")
+                order = " ".join(str(low.get(k) or "") for k in ("sort", "order", "sort_order", "direction", "desc"))
+                desc = "DESC" in order.upper() or low.get("desc") is True or low.get("descending") is True
+                for ent, name, d in _non_additive(str(ref)):
+                    out.append((ent, name, d or bool(desc)))
+            elif it:
+                out += _non_additive(str(it))
+        return out
     out = []
-    for part in re.split(r",", str(text).strip("[]() ")):
-        part = part.strip().strip('"\'')
+    for part in re.split(r",", raw.strip("[]() ")):
+        part = part.strip().strip('{}"\' ')
+        if ":" in part:                                   # "key": "value" pairs that are not valid JSON
+            part = part.split(":", 1)[1].strip().strip('{}"\' ')
         if not part:
             continue
         m = re.match(rf"({_IDENT})(?:\s*\.\s*({_IDENT}))?(\s+(?:ASC|DESC))?", part, re.I)
         if not m:
             continue
         ent, name = (m.group(1), m.group(2)) if m.group(2) else ("", m.group(1))
+        if _unq(name).upper() in _NA_WORDS:
+            continue
         out.append((_unq(ent).upper(), _unq(name).upper(), bool(m.group(3) and "DESC" in m.group(3).upper())))
     return out
 
@@ -1105,6 +1134,40 @@ class Validator:
                 if per != sorted(per):
                     bad.append({"label": f"{pn.get('segment')} periods in order", "column": "period",
                                 "dashboard": "out of order", "independent": "ascending", "ok": False})
+        elif t in ("change_bars", "driver_split"):
+            for r in data.get("rows") or []:
+                if r.get("current") is None or r.get("base") is None:
+                    continue
+                pts = data.get("unit") == "pts" and not r.get("total") and t == "change_bars"
+                expect = (r["current"] - r["base"]) if pts else pct(r["current"], r["base"])
+                chk(f"{r['segment']} change", r.get("change"), expect)
+        elif t == "velocity_split":
+            for r in data.get("rows") or []:
+                chk(f"{r['segment']}: distribution + velocity = change", r["distribution_effect"] + r["velocity_effect"],
+                    r["current"] - r["base"])
+        elif t == "stacked_trend":
+            for b_ in data.get("bars") or []:
+                chk(f"{b_['label']} total = sum of the stack", b_.get("total"), sum(_num(v) or 0 for v in b_.get("values") or []))
+        elif t == "metric_waterfall":
+            run = 0.0
+            for st in data.get("steps") or []:
+                if st["kind"] == "start":
+                    run = st["value"]
+                elif st["kind"] in ("up", "down"):
+                    run += st["value"]
+                else:
+                    chk(f"{st['label']} = the steps before it", st["value"], run)
+            n += 1
+            if data.get("notes"):
+                bad.append({"label": "Totals match the semantic view", "column": "value", "dashboard": "; ".join(data["notes"]),
+                            "independent": "steps add up", "ok": False})
+        elif t == "outlier_lines":
+            for sr in data.get("series") or []:
+                per = [p.get("period") for p in sr.get("points") or []]
+                n += 1
+                if per != sorted(per):
+                    bad.append({"label": f"{sr.get('name')} periods in order", "column": "period",
+                                "dashboard": "out of order", "independent": "ascending", "ok": False})
         elif t in ("heatmap", "segment_matrix"):
             rws, cls, vals = data.get("rows") or [], data.get("cols") or [], data.get("values") or []
             n += 1
@@ -1134,6 +1197,9 @@ class Validator:
             return extra(comp, data)
         if t not in SEGMENT_TYPES | {"segment_matrix", "heatmap"}:
             return None
+        if t in ("segment_matrix", "heatmap") and data.get("diverge"):
+            return check("QA-03", "na", "Cells cover a whole window (or show a change), so they are not expected to add up "
+                                        "to one period's total; each cell is checked by QA-01.")
         try:
             m = e._metric_for(comp)
             field = e.model.field(m, ("metric",))

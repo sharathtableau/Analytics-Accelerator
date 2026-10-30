@@ -67,7 +67,7 @@ def _first(pattern_list, items, used=()):
 def infer_bindings(model: SemanticModel) -> Bindings:
     """Deterministic first guess the user reviews (Cortex can improve it)."""
     metrics = model.metrics
-    primary = (_first((r"^NET_(SALES|REVENUE)$", r"^(SALES|REVENUE)$"), metrics)
+    primary = (_first((r"^NET_(SALES|REVENUE)$", r"^(SALES|REVENUE)$", r"^(ENDING_BALANCE|PURCHASE_VOLUME)$"), metrics)
                or _first(METRIC_HINTS[:1], metrics) or (metrics[0].id if metrics else ""))
     support = []
     for hints in ((r"^GROSS_MARGIN$", r"^(GROSS_)?PROFIT$") + METRIC_HINTS[1:2],
@@ -81,7 +81,7 @@ def infer_bindings(model: SemanticModel) -> Bindings:
         if m.id != primary and m.id not in support and m.additive:
             support.append(m.id)
     times = model.time_dimensions
-    time = _first((r"^(CALENDAR_DATE|DATE_KEY|DATE)$", r"ORDER_DATE|TRANSACTION_DATE|EVENT_DATE"), times) or (times[0].id if times else "")
+    time = _first((r"^(CALENDAR_DATE|DATE_KEY|DATE)$", r"^WEEK_END(ING)?(_DATE)?$", r"ORDER_DATE|TRANSACTION_DATE|EVENT_DATE"), times) or (times[0].id if times else "")
     cats = model.categorical_dimensions
     segment = _first(SEGMENT_HINTS, cats)
     region = _first(REGION_HINTS, cats, used=[segment])

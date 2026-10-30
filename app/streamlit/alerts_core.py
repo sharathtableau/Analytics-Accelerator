@@ -12,7 +12,7 @@ import html
 import json
 import uuid
 
-CORE_VERSION = "alerts-core-2"
+CORE_VERSION = "alerts-core-4"
 DEFAULT_INTEGRATION = "AA_EMAIL_INT"
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
@@ -102,6 +102,10 @@ def threshold_text(spec):
         return f"{'below' if spec.get('plan_dir', 'below') == 'below' else 'above'} plan by {_n(spec.get('pct'))}% or more"
     if r == "freshness":
         return f"has no new data for more than {spec.get('days')} day(s)"
+    if r == "unusual":
+        side = {"up": "above", "down": "below"}.get(spec.get("direction"), "outside")
+        who = f" (the total or any {spec.get('by_label')})" if spec.get("by") else ""
+        return f"goes {side} its normal range{who} ({'high' if spec.get('sensitivity') == 'high' else 'normal'} sensitivity)"
     return ""
 
 
@@ -116,7 +120,8 @@ def describe(spec):
            f"{threshold_text(spec)}"
 
 
-MONEY_WORDS = ("sales", "revenue", "margin", "cost", "profit", "amount", "price", "spend", "value", "income", "cogs")
+MONEY_WORDS = ("sales", "revenue", "margin", "cost", "profit", "amount", "price", "spend", "value", "income", "cogs",
+               "balance", "volume", "expense", "charge", "recover", "funds", "money", "runoff", "dollars", "interchange")
 
 
 def _kind(spec, values):
@@ -151,6 +156,101 @@ def _chg_text(ch, kind):
     return f"{ch * 100:+.1f} pt" if kind == "percent" else f"{ch * 100:+.1f}%"
 
 
+HISTORY = {"day": 8, "week": 13, "month": 12}       # periods that set the normal range (days: same weekday)
+SKIP = {"day": 0, "week": 3, "month": 1}            # the most recent periods are left out of "normal", so a drift
+                                                    # that built up over the last weeks is not absorbed into it
+MIN_HISTORY = 6
+
+
+def _median(xs):
+    xs = sorted(xs)
+    n = len(xs)
+    return None if not n else (xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2.0)
+
+
+def normal_range(history, k):
+    """Median and robust spread (1.4826 x median absolute deviation) of the recent history; the range is
+    median +/- k x spread. A perfectly flat history gets a small floor so tiny wobbles don't fire."""
+    med = _median(history)
+    if med is None:
+        return None
+    spread = 1.4826 * _median([abs(x - med) for x in history])
+    spread = max(spread, abs(med) * 0.01, 1e-9)
+    return med, med - k * spread, med + k * spread, spread
+
+
+def _unusual(spec, rows, today, out):
+    grain = spec.get("grain", "week")
+    k = 2.0 if spec.get("sensitivity") == "high" else 3.0
+    dirn = spec.get("direction", "either")
+    by_seg = {}
+    for r in rows:
+        low = {str(a).lower(): b for a, b in r.items()}
+        d = _date(low.get("period"))
+        if d is not None:
+            seg = low.get("seg")
+            by_seg.setdefault("(All)" if seg is None else str(seg), []).append((d, _num(low.get("m0")), None))
+    kind = _kind(spec, [v for xs in by_seg.values() for _, v, _ in xs])
+    out["kind"] = kind
+    name = spec.get("metric_label") or "The metric"
+    checks = []
+    for seg, xs in by_seg.items():
+        have = [x for x in _complete(sorted(xs), grain, today) if x[1] is not None]
+        if len(have) < MIN_HISTORY + 1:
+            continue
+        d, v, _ = have[-1]
+        prior = have[:-1]
+        if grain == "day":                                     # same weekday: Mondays are compared with Mondays
+            prior = [x for x in prior if x[0].weekday() == d.weekday()]
+        sk = SKIP.get(grain, 0)
+        base = prior[:-sk] if sk and len(prior) > sk + MIN_HISTORY else prior
+        hist = [x[1] for x in base[-HISTORY.get(grain, 13):]]
+        if len(hist) < MIN_HISTORY:
+            continue
+        med, lo, hi, spread = normal_range(hist, k)
+        z = (v - med) / spread
+        bad = (v > hi) if dirn == "up" else (v < lo) if dirn == "down" else (v > hi or v < lo)
+        checks.append({"seg": seg, "period": d, "value": v, "median": med, "lo": lo, "hi": hi, "z": z, "bad": bad})
+    if not checks:
+        out.update(status="no_data", detail=f"Not enough history yet: the normal range needs at least {MIN_HISTORY} "
+                                            f"earlier {grain}s with data.")
+        return out
+    latest = max(c["period"] for c in checks)
+    checks = [c for c in checks if c["period"] == latest]
+    flagged = sorted([c for c in checks if c["bad"]], key=lambda c: -abs(c["z"]))
+    total = next((c for c in checks if c["seg"] == "(All)"), None)
+    lead = flagged[0] if flagged else (total or max(checks, key=lambda c: abs(c["z"])))
+    basis = {"day": f"the same weekday over the last {HISTORY['day']} weeks",
+             "week": f"the {HISTORY['week']} weeks before the last {SKIP['week'] + 1}",
+             "month": f"the {HISTORY['month']} months before the last {SKIP['month'] + 1}"}.get(grain, "recent history")
+    who = lambda c: "" if c["seg"] == "(All)" else f" for {c['seg']}"
+    rng = lambda c: f"{fmt(c['lo'], kind)} to {fmt(c['hi'], kind)}"
+    out.update(value=lead["value"], compare=lead["median"], period=latest.isoformat(), period_label=period_label(latest, grain),
+               fired=bool(flagged))
+    if flagged:
+        c = flagged[0]
+        side = "above" if c["value"] > c["hi"] else "below"
+        more = f" (+{len(flagged) - 1} more)" if len(flagged) > 1 else ""
+        out["headline"] = f"{name}{who(c)} is unusual: {fmt(c['value'], kind)}, {side} its normal range of {rng(c)}{more}"
+        out["detail"] = "; ".join(f"{c2['seg']} {fmt(c2['value'], kind)} (normal {rng(c2)})" for c2 in flagged[:5])
+    else:
+        out["headline"] = f"{name} is within its normal range" + (f" for the total and every {spec.get('by_label')}" if spec.get("by") else "")
+        out["detail"] = f"{fmt(lead['value'], kind)} vs normal {rng(lead)}"
+    facts = [[f"Normal range based on", basis]]
+    for c in (flagged[:5] or ([total] if total else checks[:1])):
+        facts.append([f"{'Total' if c['seg'] == '(All)' else c['seg']}, {period_label(latest, grain)}",
+                      f"{fmt(c['value'], kind)} (normal {rng(c)})"])
+    flt = "; ".join(f"{a} = {', '.join(b)}" for a, b in (spec.get("filter_labels") or {}).items()) or "All data"
+    facts += [["Filters", flt], ["Your rule", threshold_text(spec)]]
+    out["facts"] = facts
+    out["status"] = "fired" if flagged else "ok"
+    out["key"] = f"unusual:{out['period']}:" + ",".join(sorted(c["seg"] for c in flagged))[:200]
+    out["series"] = [{"segment": c["seg"], "value": c["value"], "low": c["lo"], "high": c["hi"], "median": c["median"],
+                      "unusual": c["bad"], "value_text": fmt(c["value"], kind), "range_text": rng(c)}
+                     for c in sorted(checks, key=lambda c: -abs(c["z"]))[:12]]
+    return out
+
+
 def evaluate(spec, rows, now_utc=None):
     """rows = check SQL result (PERIOD, M0[, M1]). Returns the outcome; never sends anything.
     Also returns 'headline' (what happened, in words) and 'facts' (label, value) for the email and the app."""
@@ -170,6 +270,8 @@ def evaluate(spec, rows, now_utc=None):
     flt = "; ".join(f"{k} = {', '.join(v)}" for k, v in (spec.get("filter_labels") or {}).items()) or "All data"
     out = {"status": "ok", "value": None, "compare": None, "period": None, "period_label": "", "key": "",
            "detail": "", "fired": False, "kind": kind, "headline": "", "facts": []}
+    if rule == "unusual":
+        return _unusual(spec, rows, today, out)
     if rule == "freshness":
         if not have_all:
             out.update(status="fired", fired=True, key="stale:none", headline=f"No {name} data at all",

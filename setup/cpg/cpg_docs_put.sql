@@ -1,0 +1,1 @@
+PUT 'file://C:/Users/SharathKumarKammari/Downloads/snowflake-react-app-runtime/Analytics_Accelerator_Enterprise_Claude/setup/cpg/docs/*.md' @WBR_DB.CPG_DEMO.CPG_DOCS_STAGE AUTO_COMPRESS = FALSE OVERWRITE = TRUE;

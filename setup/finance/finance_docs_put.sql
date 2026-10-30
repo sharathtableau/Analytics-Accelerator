@@ -1,0 +1,1 @@
+PUT 'file://C:/Users/SharathKumarKammari/Downloads/snowflake-react-app-runtime/Analytics_Accelerator_Enterprise_Claude/setup/finance/docs/*.md' @WBR_DB.FINANCE_DEMO.FINANCE_DOCS_STAGE AUTO_COMPRESS = FALSE OVERWRITE = TRUE;

@@ -205,3 +205,19 @@ class LoopTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AttentionTests(unittest.TestCase):
+    def test_attention_groups_my_work_per_dashboard(self):
+        import uat as _u
+        rows = [
+            {"dashboard_id": "d1", "dashboard_name": "Credit", "cid": "p1/t2", "state": "rejected", "mine_owner": True, "mine_reviewer": False, "age_days": 4},
+            {"dashboard_id": "d1", "dashboard_name": "Credit", "cid": "p1/t3", "state": "fixed", "mine_owner": True, "mine_reviewer": True, "age_days": 1},
+            {"dashboard_id": "d2", "dashboard_name": "Brand", "cid": "p1/t1", "state": "rejected", "mine_owner": False, "mine_reviewer": True, "age_days": 9},
+            {"dashboard_id": "d3", "dashboard_name": "Supply", "cid": "p2/t1", "state": "replied", "mine_owner": False, "mine_reviewer": True, "age_days": 0},
+        ]
+        out = _u.attention(rows)
+        self.assertEqual([d["dashboard_id"] for d in out], ["d1", "d3"])     # d2: waiting on someone else
+        self.assertEqual((out[0]["to_fix"], out[0]["to_recheck"], out[0]["cid"], out[0]["oldest_days"]), (1, 1, "p1/t2", 4))
+        self.assertEqual((out[1]["to_fix"], out[1]["to_recheck"]), (0, 1))
+        self.assertEqual(_u.attention([]), [])

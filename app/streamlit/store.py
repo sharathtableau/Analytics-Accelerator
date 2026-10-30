@@ -130,6 +130,9 @@ class Store:
             f"""CREATE TABLE IF NOT EXISTS {self.settings} (
                 SETTING_KEY VARCHAR, SETTING_VALUE VARCHAR, SET_BY VARCHAR,
                 SET_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP())""",
+            f"""CREATE TABLE IF NOT EXISTS {self.schema}.AA_DOMAINS (
+                DOMAIN_ID VARCHAR, SPEC VARIANT, ACTIVE BOOLEAN DEFAULT TRUE, UPDATED_BY VARCHAR,
+                UPDATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP())""",
         ]
         try:
             for s in ddl:
@@ -203,9 +206,12 @@ class Store:
             f"TO_VARCHAR(CREATED_AT, 'YYYY-MM-DD HH24:MI') AS CREATED_AT FROM {self.dashboards} "
             "QUALIFY ROW_NUMBER() OVER (PARTITION BY DASHBOARD_ID ORDER BY VERSION DESC) = 1 "
             "ORDER BY CREATED_AT DESC LIMIT 50").collect()
+        hidden = {k.split(":", 1)[1] for k, v in self.list_settings("dash_hidden:").items() if v and v != "0"}
         out = []
         for r in rows:
             d = row_dict(r)
+            if str(d.get("dashboard_id") or "") in hidden:
+                continue
             try:
                 d["bindings"] = json.loads(d.get("bindings") or "{}")
                 d["layout"] = json.loads(d.pop("layout_spec", None) or "null") or None
@@ -580,6 +586,16 @@ class Store:
             return {k.lower(): v for k, v in row_dict(rows[0]).items()} if rows else None
         except Exception:
             return None
+
+    def list_domains(self) -> list[dict[str, Any]]:
+        """Workspace overrides / additions (newest row per domain wins). Empty table = the built-in domains."""
+        try:
+            rows = self.session.sql(
+                f"SELECT DOMAIN_ID, TO_VARCHAR(SPEC) AS SPEC, ACTIVE FROM {self.schema}.AA_DOMAINS "
+                "QUALIFY ROW_NUMBER() OVER (PARTITION BY DOMAIN_ID ORDER BY UPDATED_AT DESC) = 1").collect()
+            return [{k.lower(): v for k, v in row_dict(r).items()} for r in rows]
+        except Exception:
+            return []
 
     def list_settings(self, prefix: str) -> dict[str, str]:
         """Latest value of every setting whose key starts with prefix (e.g. 'owner:' -> dashboard owner hand-overs)."""

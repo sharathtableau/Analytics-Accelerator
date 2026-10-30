@@ -1,0 +1,7 @@
+product_id,product_name,product_type,tier,portfolio_mix_pct,avg_apr_pct
+PRD-01,Keystone Cash Rewards Card,Credit Card,Mainstream,22.0,22.9
+PRD-02,Keystone Travel Signature Card,Credit Card,Premium,17.0,20.9
+PRD-03,Keystone Secured Card,Credit Card,Subprime,6.0,28.9
+PRD-04,Keystone Small Business Card,Credit Card,Business,11.0,21.9
+PRD-05,Keystone High-Yield Savings,Deposit,Mainstream,28.0,0.0
+PRD-06,Keystone 12-Month CD,Deposit,Mainstream,16.0,0.0

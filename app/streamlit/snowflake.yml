@@ -29,6 +29,9 @@ entities:
       - xlsx_lite.py
       - alerts.py
       - alerts_core.py
+      - domains.py
+      - domain_packs.py
+      - domain_tiles.py
       - persona_tiles.py
       - persona_layouts.py
       - metric_drafter.py
@@ -73,6 +76,9 @@ entities:
       - xlsx_lite.py
       - alerts.py
       - alerts_core.py
+      - domains.py
+      - domain_packs.py
+      - domain_tiles.py
       - persona_tiles.py
       - persona_layouts.py
       - metric_drafter.py

@@ -1,0 +1,58 @@
+-- Part 2 (after the PUT): markdown -> chunks (+ metric glossary from the semantic view) -> Cortex Search.
+-- The INFERA pack's DEMO_GUIDE (planted signals) is deliberately NOT loaded: it would give the answers away.
+USE SCHEMA WBR_DB.FINANCE_DEMO;
+ALTER STAGE FINANCE_DOCS_STAGE REFRESH;
+SELECT RELATIVE_PATH, SIZE FROM DIRECTORY(@FINANCE_DOCS_STAGE) ORDER BY 1;
+
+CREATE OR REPLACE FILE FORMAT FF_LINES TYPE = CSV FIELD_DELIMITER = NONE RECORD_DELIMITER = '\n'
+  SKIP_BLANK_LINES = FALSE FIELD_OPTIONALLY_ENCLOSED_BY = NONE ESCAPE_UNENCLOSED_FIELD = NONE;
+CREATE OR REPLACE TABLE FINANCE_DOCS_PARSED AS
+SELECT METADATA$FILENAME AS FILE_NAME,
+       LISTAGG(COALESCE($1, ''), '\n') WITHIN GROUP (ORDER BY METADATA$FILE_ROW_NUMBER) AS CONTENT
+FROM @FINANCE_DOCS_STAGE (FILE_FORMAT => 'WBR_DB.FINANCE_DEMO.FF_LINES', PATTERN => '.*[.]md')
+GROUP BY METADATA$FILENAME;
+SELECT FILE_NAME, LENGTH(CONTENT) AS CHARS FROM FINANCE_DOCS_PARSED ORDER BY 1;
+
+-- Chunk with SPLIT_TEXT_RECURSIVE_CHARACTER (markdown-aware). Fallback: one chunk per section heading.
+CREATE OR REPLACE TABLE FINANCE_DOCS (
+  DOC_ID STRING, TITLE STRING, DOC_TYPE STRING, SOURCE STRING, CHUNK_NO INT, CHUNK STRING);
+EXECUTE IMMEDIATE $$
+BEGIN
+  INSERT INTO WBR_DB.FINANCE_DEMO.FINANCE_DOCS
+  SELECT 'KFS-ONTOLOGY', 'Keystone Financial business ontology', 'business definitions', p.FILE_NAME, c.INDEX, c.VALUE::STRING
+  FROM WBR_DB.FINANCE_DEMO.FINANCE_DOCS_PARSED p,
+       LATERAL FLATTEN(SNOWFLAKE.CORTEX.SPLIT_TEXT_RECURSIVE_CHARACTER(p.CONTENT, 'markdown', 1200, 150)) c;
+  RETURN 'Chunked with SPLIT_TEXT_RECURSIVE_CHARACTER';
+EXCEPTION WHEN OTHER THEN
+  INSERT INTO WBR_DB.FINANCE_DEMO.FINANCE_DOCS
+  SELECT 'KFS-ONTOLOGY', 'Keystone Financial business ontology', 'business definitions', p.FILE_NAME, s.INDEX,
+         '## ' || s.VALUE::STRING
+  FROM WBR_DB.FINANCE_DEMO.FINANCE_DOCS_PARSED p, LATERAL FLATTEN(SPLIT(p.CONTENT, '\n## ')) s;
+  RETURN 'SPLIT_TEXT_RECURSIVE_CHARACTER unavailable - chunked by section heading';
+END;
+$$;
+
+-- Metric glossary straight from the semantic view, so definitions in search = definitions in the dashboard.
+DESCRIBE SEMANTIC VIEW WBR_DB.FINANCE_DEMO.FINANCE_ANALYTICS_SV;
+INSERT INTO FINANCE_DOCS
+SELECT 'GLOSSARY', 'Metric definition: ' || INITCAP(REPLACE("object_name", '_', ' ')), 'metric definition',
+       'FINANCE_ANALYTICS_SV', 0,
+       'Metric ' || INITCAP(REPLACE("object_name", '_', ' ')) || ' (' || "object_name" || '): ' || "property_value"
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+WHERE "object_kind" IN ('METRIC', 'DERIVED_METRIC') AND "property" = 'COMMENT'
+  AND "object_name" NOT ILIKE 'HELPER%';
+SELECT DOC_TYPE, COUNT(*) AS CHUNKS FROM FINANCE_DOCS GROUP BY 1 ORDER BY 1;
+
+CREATE OR REPLACE CORTEX SEARCH SERVICE FINANCE_DOCS_SEARCH
+  ON CHUNK
+  ATTRIBUTES DOC_TYPE, TITLE, DOC_ID
+  WAREHOUSE = POWERHOUSE
+  TARGET_LAG = '1 day'
+  COMMENT = 'Keystone Financial (fictional): personas, metric dictionary, alert library, business rules and metric glossary'
+  AS SELECT CHUNK, TITLE, DOC_TYPE, DOC_ID, SOURCE, CHUNK_NO FROM FINANCE_DOCS;
+
+-- Smoke tests: the definitions the demo relies on.
+SELECT PARSE_JSON(SNOWFLAKE.CORTEX.SEARCH_PREVIEW('WBR_DB.FINANCE_DEMO.FINANCE_DOCS_SEARCH',
+  '{"query": "what does a positive rate gap mean", "columns": ["DOC_ID", "TITLE", "CHUNK"], "limit": 2}'))['results'] AS RATE_GAP;
+SELECT PARSE_JSON(SNOWFLAKE.CORTEX.SEARCH_PREVIEW('WBR_DB.FINANCE_DEMO.FINANCE_DOCS_SEARCH',
+  '{"query": "rewards to interchange breach threshold", "columns": ["DOC_ID", "TITLE", "CHUNK"], "limit": 2}'))['results'] AS REWARDS_RULE;

@@ -100,6 +100,12 @@ class TileChecks(unittest.TestCase):
         out = self.v.qa03(comp, data)
         self.assertIn("Profit Ratio not additive", out["summary"])
 
+    def test_non_additive_formats(self):
+        self.assertEqual(V._non_additive('[{"DIMENSION":"DATES.CALENDAR_DATE","SORT":"DESC"}]'), [("DATES", "CALENDAR_DATE", True)])
+        self.assertEqual(V._non_additive('(dates.calendar_date DESC)'), [("DATES", "CALENDAR_DATE", True)])
+        self.assertEqual(V._non_additive('{"dimension": "SNAPSHOT_DATE"}'), [("", "SNAPSHOT_DATE", False)])
+        self.assertEqual(V._non_additive("DIMENSION"), [])           # a key word is never taken as the dimension
+
     def test_change_helper(self):
         self.assertAlmostEqual(V._chg("percent", 0.12, 0.10), 0.02)
         self.assertAlmostEqual(V._chg("currency", 110, 100), 0.10)

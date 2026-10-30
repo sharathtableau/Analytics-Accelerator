@@ -1,0 +1,292 @@
+"""Generates 03_semantic_view.sql: FINANCE_ANALYTICS_SV over the rolling SV_SRC_* views (with fallbacks).
+
+Fixes applied to the pack's semantic_model_finance.yaml:
+  1. delinquency / loss rates divide by CARD balances of the same product x segment x week (the pack divided
+     credit-table past-due balances by the portfolio balance of every product, deposits included, across tables);
+  2. balances, accounts and past-due balances are stocks: NON ADDITIVE BY week (never summed across weeks);
+  3. rates are balance-weighted (the pack averaged rate_gap_pct);
+  4. dates roll forward (see 02_views.sql), so "last 13 weeks" questions keep working.
+Ratios/rates are fractions (0.079 = 7.9%) like the retail view; the app formats them as percentages.
+"""
+S = "WBR_DB.FINANCE_DEMO"
+WEEK = "weeks.week_ending"
+
+TABLES = f"""
+  TABLES (
+    weeks AS {S}.SV_SRC_WEEKS PRIMARY KEY (C_WEEK_ENDING)
+      WITH SYNONYMS ('calendar', 'week') COMMENT = 'Weekly calendar. Every row covers Monday to Sunday and is dated by the Sunday the week ends; a week belongs to the month it ends in.',
+    products AS {S}.SV_SRC_PRODUCT PRIMARY KEY (C_PRODUCT_ID)
+      WITH SYNONYMS ('product', 'card', 'account type') COMMENT = 'Six products: four credit cards (Cash Rewards, Travel Signature, Secured, Small Business) and two deposit products (High-Yield Savings, 12-Month CD).',
+    segments AS {S}.SV_SRC_SEGMENT PRIMARY KEY (C_SEGMENT_ID)
+      WITH SYNONYMS ('customer segment', 'behavioural segment') COMMENT = 'Six behavioural segments crossing credit quality and product usage.',
+    portfolio AS {S}.SV_SRC_PORTFOLIO PRIMARY KEY (C_WEEK_ENDING, C_PRODUCT_ID, C_SEGMENT_ID)
+      WITH SYNONYMS ('book', 'balances', 'portfolio performance')
+      COMMENT = 'Weekly balances, accounts, card spend and economics for every product (cards and deposits) and segment.',
+    credit AS {S}.SV_SRC_CREDIT PRIMARY KEY (C_WEEK_ENDING, C_PRODUCT_ID, C_SEGMENT_ID)
+      WITH SYNONYMS ('credit risk', 'delinquency', 'losses')
+      COMMENT = 'Weekly credit performance of CREDIT CARD products only: past-due balances, charge-offs, recoveries, FICO.',
+    deposits AS {S}.SV_SRC_DEPOSITS PRIMARY KEY (C_WEEK_ENDING, C_PRODUCT_ID, C_SEGMENT_ID)
+      WITH SYNONYMS ('savings', 'CDs', 'deposit book')
+      COMMENT = 'Weekly retail deposit balances, flows and pricing for DEPOSIT products only.',
+    acquisition AS {S}.SV_SRC_ACQUISITION PRIMARY KEY (C_WEEK_ENDING, C_PRODUCT_ID, C_CHANNEL)
+      WITH SYNONYMS ('marketing', 'new account acquisition', 'funnel')
+      COMMENT = 'Weekly acquisition funnel by product and marketing channel: spend, applications, approvals, bookings.'
+  )"""
+
+RELS = """
+  RELATIONSHIPS (
+    portfolio_to_weeks AS portfolio (C_WEEK_ENDING) REFERENCES weeks,
+    portfolio_to_products AS portfolio (C_PRODUCT_ID) REFERENCES products,
+    portfolio_to_segments AS portfolio (C_SEGMENT_ID) REFERENCES segments,
+    credit_to_weeks AS credit (C_WEEK_ENDING) REFERENCES weeks,
+    credit_to_products AS credit (C_PRODUCT_ID) REFERENCES products,
+    credit_to_segments AS credit (C_SEGMENT_ID) REFERENCES segments,
+    deposits_to_weeks AS deposits (C_WEEK_ENDING) REFERENCES weeks,
+    deposits_to_products AS deposits (C_PRODUCT_ID) REFERENCES products,
+    deposits_to_segments AS deposits (C_SEGMENT_ID) REFERENCES segments,
+    acquisition_to_weeks AS acquisition (C_WEEK_ENDING) REFERENCES weeks,
+    acquisition_to_products AS acquisition (C_PRODUCT_ID) REFERENCES products
+  )"""
+
+FACTS = """
+  FACTS (
+    portfolio.f_week AS C_WEEK_ENDING,
+    portfolio.f_ending_balance AS C_ENDING_BALANCE,
+    portfolio.f_card_balance AS C_CARD_BALANCE,
+    portfolio.f_revolving_balance AS C_REVOLVING_BALANCE,
+    portfolio.f_new_accounts AS C_NEW_ACCOUNTS,
+    portfolio.f_closed_accounts AS C_CLOSED_ACCOUNTS,
+    portfolio.f_active_accounts AS C_ACTIVE_ACCOUNTS,
+    portfolio.f_purchase_volume AS C_PURCHASE_VOLUME,
+    portfolio.f_interchange_revenue AS C_INTERCHANGE_REVENUE,
+    portfolio.f_rewards_expense AS C_REWARDS_EXPENSE,
+    portfolio.f_net_interest_income AS C_NET_INTEREST_INCOME,
+    portfolio.f_cost_of_funds AS C_COST_OF_FUNDS,
+    credit.f_dpd_30_balance AS C_DPD_30_BALANCE,
+    credit.f_dpd_60_balance AS C_DPD_60_BALANCE,
+    credit.f_dpd_90_balance AS C_DPD_90_BALANCE,
+    credit.f_gross_chargeoffs AS C_GROSS_CHARGEOFFS,
+    credit.f_recoveries AS C_RECOVERIES,
+    credit.f_net_chargeoffs AS C_NET_CHARGEOFFS,
+    credit.f_card_balance AS C_CARD_BALANCE,
+    credit.f_fico_x_balance AS C_FICO_X_BALANCE,
+    credit.f_card_revenue AS C_CARD_REVENUE,
+    deposits.f_deposit_balance AS C_DEPOSIT_BALANCE,
+    deposits.f_runoff AS C_RUNOFF,
+    deposits.f_maturing AS C_MATURING,
+    deposits.f_new_money AS C_NEW_MONEY,
+    deposits.f_rate_paid_x_balance AS C_RATE_PAID_X_BALANCE,
+    deposits.f_competitor_rate_x_balance AS C_COMPETITOR_RATE_X_BALANCE,
+    deposits.f_rate_gap_x_balance AS C_RATE_GAP_X_BALANCE,
+    acquisition.f_marketing_spend AS C_MARKETING_SPEND,
+    acquisition.f_applications AS C_APPLICATIONS,
+    acquisition.f_approvals AS C_APPROVALS,
+    acquisition.f_bookings AS C_BOOKINGS,
+    acquisition.f_credit_line_x_bookings AS C_CREDIT_LINE_X_BOOKINGS
+  )"""
+
+DIMS = """
+  DIMENSIONS (
+    weeks.week_ending AS C_WEEK_ENDING WITH SYNONYMS = ('week', 'week ending', 'date')
+      COMMENT = 'Sunday that ends the week. Use for all time filtering; the newest week is the last full week.',
+    weeks.week_start AS C_WEEK_START COMMENT = 'Monday that starts the week.',
+    weeks.month_start AS C_MONTH_START WITH SYNONYMS = ('month') COMMENT = 'First day of the month the week ends in.',
+    weeks.month_name AS C_MONTH_NAME COMMENT = 'Month label, e.g. Oct 2026.',
+    weeks.calendar_quarter AS C_QUARTER WITH SYNONYMS = ('fiscal quarter') COMMENT = 'Calendar quarter, e.g. 2026-Q3.',
+    weeks.calendar_year AS C_YEAR WITH SYNONYMS = ('fiscal year') COMMENT = 'Calendar (= fiscal) year.',
+    weeks.week_of_year AS C_WEEK_OF_YEAR COMMENT = 'ISO week number.',
+    products.product_name AS C_PRODUCT_NAME WITH SYNONYMS = ('product', 'card product', 'deposit product')
+      COMMENT = 'Product name, e.g. Keystone Travel Signature Card.',
+    products.product_type AS C_PRODUCT_TYPE WITH SYNONYMS = ('business line', 'line of business')
+      COMMENT = 'Credit Card or Deposit.',
+    products.tier AS C_TIER WITH SYNONYMS = ('product tier') COMMENT = 'Mainstream, Premium, Subprime or Business.',
+    segments.segment_name AS C_SEGMENT_NAME WITH SYNONYMS = ('segment', 'customer segment')
+      COMMENT = 'Behavioural segment, e.g. Near-Prime Revolver, Mass Affluent Saver.',
+    segments.credit_tier AS C_CREDIT_TIER WITH SYNONYMS = ('FICO band', 'credit band')
+      COMMENT = 'Prime (740+), Near-prime (660-739) or Subprime (<660), from the segment average FICO.',
+    segments.segment_description AS C_SEGMENT_DESCRIPTION COMMENT = 'What characterises the segment.',
+    acquisition.channel AS C_CHANNEL WITH SYNONYMS = ('marketing channel', 'acquisition channel')
+      COMMENT = 'Acquisition channel, e.g. Direct Mail, Digital Paid, Branch.'
+  )"""
+
+STOCK = f"NON ADDITIVE BY ({WEEK}) "
+
+METRICS = """
+  METRICS (
+    portfolio.ending_balance {NA}AS SUM(portfolio.f_ending_balance) WITH SYNONYMS = ('balance', 'balances', 'managed balances', 'outstandings')
+      COMMENT = 'Balance at the end of the latest week in the period (cards + deposits unless filtered). A stock: never summed across weeks.',
+    portfolio.active_accounts {NA}AS SUM(portfolio.f_active_accounts) WITH SYNONYMS = ('accounts', 'open accounts')
+      COMMENT = 'Active accounts at the end of the latest week in the period.',
+    portfolio.helper_weeks AS COUNT(DISTINCT portfolio.f_week) COMMENT = 'Helper: weeks in the period.',
+    portfolio.helper_balance_weeks AS SUM(portfolio.f_ending_balance) COMMENT = 'Helper: weekly balances summed over weeks.',
+    portfolio.helper_card_balance_weeks AS SUM(portfolio.f_card_balance) COMMENT = 'Helper: weekly card balances summed over weeks.',
+    portfolio.helper_active_weeks AS SUM(portfolio.f_active_accounts) COMMENT = 'Helper: weekly active accounts summed over weeks.',
+    portfolio.average_balance AS DIV0(portfolio.helper_balance_weeks, portfolio.helper_weeks) WITH SYNONYMS = ('average balances')
+      COMMENT = 'Average weekly ending balance over the period.',
+    portfolio.new_accounts AS SUM(portfolio.f_new_accounts) WITH SYNONYMS = ('new accounts opened', 'account openings')
+      COMMENT = 'Accounts opened in the period.',
+    portfolio.closed_accounts AS SUM(portfolio.f_closed_accounts) COMMENT = 'Accounts closed in the period.',
+    portfolio.attrition_rate AS DIV0(portfolio.closed_accounts * 52, portfolio.helper_active_weeks) WITH SYNONYMS = ('attrition', 'churn rate')
+      COMMENT = 'Annualised account attrition: closed accounts / active accounts, x 52 weeks.',
+    portfolio.purchase_volume AS SUM(portfolio.f_purchase_volume) WITH SYNONYMS = ('card spend', 'spend volume', 'purchases')
+      COMMENT = 'Card purchase volume (USD).',
+    portfolio.interchange_revenue AS SUM(portfolio.f_interchange_revenue) WITH SYNONYMS = ('interchange')
+      COMMENT = 'Interchange fees earned on card spend (USD).',
+    portfolio.rewards_expense AS SUM(portfolio.f_rewards_expense) WITH SYNONYMS = ('rewards cost', 'rewards')
+      COMMENT = 'Cost of card rewards (USD).',
+    portfolio.rewards_to_interchange_ratio AS DIV0(portfolio.rewards_expense, portfolio.interchange_revenue)
+      WITH SYNONYMS = ('rewards to interchange', 'rewards ratio')
+      COMMENT = 'Rewards expense / interchange revenue. Healthy below 0.80; above 0.85 is a profitability breach.',
+    portfolio.net_interest_income AS SUM(portfolio.f_net_interest_income) WITH SYNONYMS = ('NII', 'interest income')
+      COMMENT = 'Net interest income (USD).',
+    portfolio.cost_of_funds AS SUM(portfolio.f_cost_of_funds) WITH SYNONYMS = ('funding cost')
+      COMMENT = 'Cost of funds (USD).',
+    portfolio.net_interest_margin_pct AS DIV0((portfolio.net_interest_income - portfolio.cost_of_funds) * 52, portfolio.helper_balance_weeks)
+      WITH SYNONYMS = ('NIM', 'net interest margin')
+      COMMENT = 'Annualised (net interest income - cost of funds) / average balance.',
+    portfolio.cost_of_funds_rate AS DIV0(portfolio.cost_of_funds * 52, portfolio.helper_balance_weeks)
+      COMMENT = 'Annualised cost of funds / average balance.',
+    portfolio.helper_revolving_weeks AS SUM(portfolio.f_revolving_balance) COMMENT = 'Helper: weekly revolving balances summed over weeks.',
+    portfolio.revolve_rate AS DIV0(portfolio.helper_revolving_weeks, portfolio.helper_balance_weeks)
+      WITH SYNONYMS = ('revolving share') COMMENT = 'Share of balance carrying interest (balance-weighted).',
+    credit.dpd_30_balance {NA}AS SUM(credit.f_dpd_30_balance) WITH SYNONYMS = ('30 days past due', '30+ DPD balance')
+      COMMENT = 'Card balance 30+ days past due at the end of the latest week in the period.',
+    credit.dpd_60_balance {NA}AS SUM(credit.f_dpd_60_balance) WITH SYNONYMS = ('60 days past due')
+      COMMENT = 'Card balance 60+ days past due at the end of the latest week in the period.',
+    credit.dpd_90_balance {NA}AS SUM(credit.f_dpd_90_balance) WITH SYNONYMS = ('90 days past due')
+      COMMENT = 'Card balance 90+ days past due at the end of the latest week in the period.',
+    credit.helper_dpd_30_weeks AS SUM(credit.f_dpd_30_balance) COMMENT = 'Helper: weekly 30+ DPD balances summed over weeks.',
+    credit.helper_credit_card_balance_weeks AS SUM(credit.f_card_balance) COMMENT = 'Helper: weekly card balances summed over weeks.',
+    credit.delinquency_rate AS DIV0(credit.helper_dpd_30_weeks, credit.helper_credit_card_balance_weeks)
+      WITH SYNONYMS = ('delinquency', '30+ delinquency rate', 'past due rate')
+      COMMENT = '30+ days past due balance / card balance (cards only; average over the weeks in the period).',
+    credit.gross_chargeoffs AS SUM(credit.f_gross_chargeoffs) WITH SYNONYMS = ('gross charge-offs', 'gross losses')
+      COMMENT = 'Gross charge-offs (USD).',
+    credit.recoveries AS SUM(credit.f_recoveries) COMMENT = 'Recoveries on charged-off accounts (USD).',
+    credit.net_chargeoffs AS SUM(credit.f_net_chargeoffs) WITH SYNONYMS = ('net charge-offs', 'NCO', 'net losses')
+      COMMENT = 'Gross charge-offs minus recoveries (USD).',
+    credit.annualized_loss_rate AS DIV0(credit.net_chargeoffs * 52, credit.helper_credit_card_balance_weeks)
+      WITH SYNONYMS = ('loss rate', 'net charge-off rate', 'NCO rate')
+      COMMENT = 'Annualised net charge-offs / average card balance.',
+    credit.recovery_rate AS DIV0(credit.recoveries, credit.gross_chargeoffs) COMMENT = 'Recoveries / gross charge-offs.',
+    credit.card_revenue AS SUM(credit.f_card_revenue) WITH SYNONYMS = ('card revenue')
+      COMMENT = 'Card net interest income + interchange - rewards (USD), before funding cost and losses.',
+    credit.risk_adjusted_yield AS DIV0((credit.card_revenue - credit.net_chargeoffs) * 52, credit.helper_credit_card_balance_weeks)
+      WITH SYNONYMS = ('risk adjusted yield', 'risk-adjusted margin', 'yield after losses')
+      COMMENT = 'Annualised (card revenue - net charge-offs) / average card balance. Below zero the segment loses money after losses.',
+    credit.helper_fico_x_balance AS SUM(credit.f_fico_x_balance) COMMENT = 'Helper: FICO x card balance summed.',
+    credit.average_fico AS DIV0(credit.helper_fico_x_balance, credit.helper_credit_card_balance_weeks)
+      WITH SYNONYMS = ('FICO', 'credit score') COMMENT = 'Balance-weighted average FICO score of card customers.',
+    deposits.deposit_balance {NA}AS SUM(deposits.f_deposit_balance) WITH SYNONYMS = ('deposits', 'deposit balances', 'savings balance')
+      COMMENT = 'Deposit balance at the end of the latest week in the period.',
+    deposits.helper_deposit_balance_weeks AS SUM(deposits.f_deposit_balance) COMMENT = 'Helper: weekly deposit balances summed over weeks.',
+    deposits.runoff AS SUM(deposits.f_runoff) WITH SYNONYMS = ('deposit runoff', 'outflows', 'withdrawals')
+      COMMENT = 'Deposit balances that left the bank (USD).',
+    deposits.new_money AS SUM(deposits.f_new_money) WITH SYNONYMS = ('inflows', 'new deposits') COMMENT = 'New deposit money (USD).',
+    deposits.net_new_money AS deposits.new_money - deposits.runoff WITH SYNONYMS = ('net flows', 'net deposit flows')
+      COMMENT = 'New money minus runoff (USD).',
+    deposits.maturing_dollars AS SUM(deposits.f_maturing) WITH SYNONYMS = ('CD maturities', 'maturing balances')
+      COMMENT = 'CD balances reaching maturity (USD).',
+    deposits.runoff_rate AS DIV0(deposits.runoff * 52, deposits.helper_deposit_balance_weeks)
+      WITH SYNONYMS = ('deposit runoff rate', 'attrition of deposits') COMMENT = 'Annualised runoff / average deposit balance.',
+    deposits.maturity_concentration AS DIV0(deposits.maturing_dollars, deposits.helper_deposit_balance_weeks)
+      COMMENT = 'Maturing dollars / deposit balance (average week in the period).',
+    deposits.helper_rate_paid_x_balance AS SUM(deposits.f_rate_paid_x_balance) COMMENT = 'Helper: rate paid x balance summed.',
+    deposits.helper_competitor_x_balance AS SUM(deposits.f_competitor_rate_x_balance) COMMENT = 'Helper: competitor rate x balance summed.',
+    deposits.helper_rate_gap_x_balance AS SUM(deposits.f_rate_gap_x_balance) COMMENT = 'Helper: rate gap x balance summed.',
+    deposits.rate_paid AS DIV0(deposits.helper_rate_paid_x_balance, deposits.helper_deposit_balance_weeks)
+      WITH SYNONYMS = ('APY', 'deposit rate') COMMENT = 'Balance-weighted rate (APY) paid to depositors.',
+    deposits.competitor_rate AS DIV0(deposits.helper_competitor_x_balance, deposits.helper_deposit_balance_weeks)
+      WITH SYNONYMS = ('market rate') COMMENT = 'Balance-weighted competitor rate for the same products.',
+    deposits.rate_gap AS DIV0(deposits.helper_rate_gap_x_balance, deposits.helper_deposit_balance_weeks)
+      WITH SYNONYMS = ('rate gap to competitors', 'pricing gap')
+      COMMENT = 'Competitor rate minus rate paid (balance-weighted). POSITIVE means competitors pay more than Keystone: balances are at risk.',
+    acquisition.marketing_spend AS SUM(acquisition.f_marketing_spend) WITH SYNONYMS = ('acquisition spend', 'marketing cost')
+      COMMENT = 'Acquisition marketing spend (USD).',
+    acquisition.applications AS SUM(acquisition.f_applications) WITH SYNONYMS = ('apps') COMMENT = 'Applications received.',
+    acquisition.approvals AS SUM(acquisition.f_approvals) COMMENT = 'Applications approved.',
+    acquisition.bookings AS SUM(acquisition.f_bookings) WITH SYNONYMS = ('booked accounts') COMMENT = 'Approved applications that opened an account.',
+    acquisition.approval_rate AS DIV0(acquisition.approvals, acquisition.applications) COMMENT = 'Approvals / applications.',
+    acquisition.booking_rate AS DIV0(acquisition.bookings, acquisition.approvals) COMMENT = 'Bookings / approvals.',
+    acquisition.cost_per_booking AS DIV0(acquisition.marketing_spend, acquisition.bookings) WITH SYNONYMS = ('CAC', 'customer acquisition cost')
+      COMMENT = 'Marketing spend / bookings (USD).',
+    acquisition.helper_credit_line_x_bookings AS SUM(acquisition.f_credit_line_x_bookings) COMMENT = 'Helper: initial line x bookings summed.',
+    acquisition.average_initial_credit_line AS DIV0(acquisition.helper_credit_line_x_bookings, acquisition.bookings)
+      WITH SYNONYMS = ('initial line') COMMENT = 'Booking-weighted average initial credit line (USD).'
+  )"""
+
+AI = ("  AI_SQL_GENERATION 'Keystone Financial is a fictional consumer bank. Data is weekly; weeks run Monday to Sunday and "
+      "are dated by week_ending; filter time on weeks.week_ending. Credit metrics (delinquency, charge-offs, loss rate, FICO) "
+      "apply to credit card products only; deposit metrics to deposit products only; never add them together. Balances, "
+      "active accounts and past-due balances are end-of-week stocks: never sum them across weeks. Rates are fractions and "
+      "already weighted; never average a rate. Annualise weekly flows with x 52. rate_gap = competitor rate - rate paid: a "
+      "POSITIVE gap means competitors pay more and deposits are at risk. Portfolio-level loss rates can hide one segment "
+      "deteriorating: check segment detail.'")
+
+COMMENT = "  COMMENT = 'Keystone Financial (fictional US consumer bank): card and deposit portfolio, credit risk, deposit pricing and acquisition. Weekly, rolling to the last full week.'"
+
+
+def ddl(stocks: bool, ai: bool) -> str:
+    mets = METRICS.replace("{NA}", STOCK if stocks else "")
+    if not stocks:   # without NON ADDITIVE BY the end-of-week stocks would sum across weeks: drop them
+        keep = []
+        skip = False
+        for line in mets.split("\n"):
+            head = line.strip()
+            if head.startswith(("portfolio.ending_balance ", "portfolio.active_accounts ", "credit.dpd_", "deposits.deposit_balance ")):
+                skip = True
+                continue
+            if skip and not head.startswith(("portfolio.", "credit.", "deposits.", "acquisition.", ")")):
+                continue
+            skip = False
+            keep.append(line)
+        mets = "\n".join(keep)
+    return (f"CREATE OR REPLACE SEMANTIC VIEW {S}.FINANCE_ANALYTICS_SV" + TABLES + RELS + FACTS + DIMS + mets
+            + "\n" + COMMENT + ("\n" + AI if ai else ""))     # COMMENT must come before AI_SQL_GENERATION
+
+
+HEAD = f"""-- =====================================================================================
+-- Keystone Financial (fictional) - Step 3: FINANCE_ANALYTICS_SV (generated by build_finance_sv.py)
+-- Created from the richest definition this account supports: 1) end-of-week stocks + AI instructions,
+-- 2) end-of-week stocks without AI instructions, 3) without the end-of-week stock metrics.
+-- =====================================================================================
+USE ROLE WBR_OWNER;
+USE WAREHOUSE POWERHOUSE;
+USE SCHEMA {S};
+CREATE OR REPLACE TABLE SV_DDL (ATTEMPT NUMBER, NAME VARCHAR, DDL VARCHAR);
+"""
+
+RUN = f"""
+EXECUTE IMMEDIATE $$
+DECLARE
+  c CURSOR FOR SELECT ATTEMPT, NAME, DDL FROM {S}.SV_DDL ORDER BY ATTEMPT;
+  errs VARCHAR DEFAULT '';
+  stmt VARCHAR;
+BEGIN
+  FOR r IN c DO
+    stmt := r.DDL;
+    BEGIN
+      EXECUTE IMMEDIATE :stmt;
+      RETURN 'FINANCE_ANALYTICS_SV created (' || r.NAME || ')' || IFF(errs = '', '', ' | earlier attempts: ' || errs);
+    EXCEPTION
+      WHEN OTHER THEN
+        errs := errs || '[' || r.ATTEMPT || '] ' || LEFT(SQLERRM, 300) || ' ';
+    END;
+  END FOR;
+  RETURN 'FAILED: ' || errs;
+END;
+$$;
+
+DESCRIBE SEMANTIC VIEW {S}.FINANCE_ANALYTICS_SV;
+"""
+
+if __name__ == "__main__":
+    import pathlib
+    out = [HEAD]
+    for i, (name, st, ai) in enumerate([("full: end-of-week stocks + AI instructions", True, True),
+                                         ("end-of-week stocks, no AI instructions", True, False),
+                                         ("no end-of-week stock metrics", False, False)], 1):
+        out.append(f"INSERT INTO SV_DDL VALUES ({i}, '{name}', $${ddl(st, ai)}$$);\n")
+    out.append(RUN)
+    pathlib.Path(__file__).with_name("03_semantic_view.sql").write_text("".join(out), encoding="utf-8")
+    print("wrote 03_semantic_view.sql")

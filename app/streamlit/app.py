@@ -44,6 +44,8 @@ import uat
 import uat_export
 import alerts
 import alerts_core
+import domains
+import domain_packs
 import base64
 import threading
 
@@ -85,8 +87,8 @@ for _k, _v in {"view": {"grain": None, "compare": "prior", "filters": {}}, "filt
                "filter_options": {}, "draft": None, "tile_chat": {}, "viewer_mode": False, "published": [],
                "roles": [], "share": None, "featured": [], "data_brief": [], "prompts": [], "themes": [],
                "theme_default": {}, "theme_draft": None, "uat_entries": [], "download": None, "uat_inbox": None,
-               "alert_draft": None, "alerts": None, "open_drawer": None,
-               "uat_focus": None}.items():
+               "alert_draft": None, "alerts": None, "open_drawer": None, "val_done": None,
+               "uat_focus": None, "domain": "", "persona": None, "persona_ideas": {}, "leave": None, "saved_sig": "", "persona_draft": None, "persona_new": None, "setup": None, "brief": None}.items():
     S.setdefault(_k, _v)
 store = Store(session, config.APP_SCHEMA)
 if PORTAL:
@@ -173,8 +175,11 @@ def model_obj():
     """Semantic view metadata, described once per session (one table of it for 'VIEW#TABLE' sources)."""
     if not S["source"]:
         return None
+    return model_for(S["source"]["fqn"])
+
+
+def model_for(fqn: str):
     models = st.session_state.setdefault("_models", {})
-    fqn = S["source"]["fqn"]
     if PORTAL and (fqn not in models or not hasattr(models[fqn], "metric_dims")):
         def make():
             base, _, table = fqn.partition("#")
@@ -229,7 +234,7 @@ def redraft_metrics(_p=None):
            d.get("provenance", ""), d.get("origin", ""), started)
     for k in ("_full", "_models", "_profiles", "_distinct", "_catalog"):
         st.session_state.pop(k, None)
-    home.cache_put(S["role"], catalog=None)
+    home.cache_put(ckey(), catalog=None)
     m = model_obj()
     S["model"] = m.summary()
     S["model"]["metric_dims"] = {k: sorted(v) for k, v in (getattr(m, "metric_dims", None) or {}).items()}
@@ -274,7 +279,7 @@ def distinct_for(m) -> dict[str, int]:
 
 def data_ctx() -> DataContext:
     m, b, prof = _profile_obj()
-    return DataContext(m, b, prof, {**distinct_for(m), **(prof.distinct or {})}, S["audience"])
+    return DataContext(m, b, prof, {**distinct_for(m), **(prof.distinct or {})}, S["audience"], domain_of(sv_fqn()))
 
 
 def with_tokens(prov, started):
@@ -368,13 +373,13 @@ def boot():
         S["role"] = ""
     S["features"] = cortex().detect_features()
     S["schema_errors"] = {}
-    S["sources"] = list_semantic_views(session, config.DISCOVERY_SCHEMAS, S["schema_errors"])
     store.ensure()
+    S["sources"] = list_semantic_views(session, discovery(), S["schema_errors"])
     S["dashboards"] = store.list_dashboards()
     S["published"] = store.list_published()
     load_themes()
     if not PORTAL:
-        uat_inbox_refresh()                     # badges on Change requests / Waiting for my sign-off
+        uat_inbox_refresh()                     # review counts: dashboard badges, Home "needs your attention"
         try:
             alerts_open()                       # badge on My alerts (alerts that fired)
         except Exception:
@@ -383,8 +388,119 @@ def boot():
         wanted = st.query_params.get("view")
     except Exception:
         wanted = None
+    S["domain"] = load_domain_choice()
+    if not S["domain"] and not wanted:
+        S["step"] = "domains"                     # first visit: choose a workspace (remembered afterwards)
     if wanted:
         open_published({"dashboard_id": wanted})
+
+
+# ---- Workspaces (business domains): Retail, Finance, CPG -----------------------------------------------
+def doms() -> list:
+    if "_doms" not in st.session_state:
+        st.session_state["_doms"] = domains.merge(store.list_domains(), getattr(config, "DOMAINS", None))
+    return st.session_state["_doms"]
+
+
+def view_tags() -> dict:
+    """Semantic views created in the app remember the workspace they were created in."""
+    if "_vtags" not in st.session_state:
+        st.session_state["_vtags"] = {k.split(":", 1)[1].upper(): v
+                                      for k, v in store.list_settings("viewdomain:").items()}
+    return st.session_state["_vtags"]
+
+
+def discovery() -> list:
+    return domains.discovery_schemas(config.DISCOVERY_SCHEMAS, doms())
+
+
+def cur_domain() -> dict:
+    return domains.get(doms(), S.get("domain")) or domains.get(doms(), domains.default_id(doms())) or {}
+
+
+def ckey() -> str:
+    """Cache / saved-ideas key: the role for the default workspace (unchanged from before), role@domain otherwise."""
+    d = cur_domain()
+    return S["role"] if not d or d.get("default") else f"{S['role']}@{d['id']}"
+
+
+def domain_sources() -> list:
+    return domains.sources_in(S["sources"], cur_domain().get("id", ""), doms(), view_tags())
+
+
+def domain_of(fqn: str) -> str:
+    return domains.of_view(fqn, doms(), view_tags())
+
+
+def load_domain_choice() -> str:
+    saved = (store.get_setting(f"domain:{viewer_key()}") or {}).get("setting_value") or ""
+    return saved if domains.get(doms(), saved) else ""
+
+
+def show_domains(_p=None):
+    S["step"] = "domains"
+
+
+def set_domain(p):
+    did = str((p or {}).get("domain") or "").lower()
+    d = domains.get(doms(), did)
+    if not d:
+        raise ValueError("Unknown workspace.")
+    if did != (S.get("domain") or "") and must_confirm_leave("set_domain", p):
+        return
+    ready = bool(domains.sources_in(S["sources"], did, doms(), view_tags()))
+    if not ready:
+        raise ValueError(f"{d['name']} is coming soon: its data ({', '.join(d.get('schemas') or [])}) is not set up yet.")
+    prev = S.get("domain")
+    S["domain"] = did
+    try:
+        store.set_setting(f"domain:{viewer_key()}", did)
+    except Exception:
+        pass
+    st.session_state.pop("_catalog", None)
+    S.update(suggestions=[], suggestions_by="", suggestions_at="", featured=[], data_brief=[], prompts=[],
+             building=None, step="home", catalog_skipped=[], setup=None)
+    if S.get("source") and domain_of(S["source"].get("fqn", "")) != did:
+        name = (S.get("dashboard") or {}).get("name") or (S.get("spec") or {}).get("title") or "the open dashboard"
+        old = (domains.get(doms(), prev) or {}).get("name", "the other workspace")
+        S.update(spec=None, source=None, model=None, draft=None, bindings=None, profile=None, results={},
+                 narratives={}, chat=[], thread=None, dashboard=None, agent=None, agents=[], options=[],
+                 recommendation=None, metric_draft=None)
+        S["notice"] = f"Switched to {d['name']} · {d['company']}. Closed {name}; it stays under {old}."
+    else:
+        S["notice"] = ""
+
+
+def _scope(payload: dict) -> None:
+    """Builder payload: dashboards, reviews, alerts and data sources of the chosen workspace only."""
+    did = cur_domain().get("id", "")
+    tags = view_tags()
+    in_dom = lambda d: domains.of_dashboard(d, doms(), tags) == did
+    ids = {d.get("dashboard_id") for d in S.get("dashboards") or [] if in_dom(d)}
+    inbox = S.get("uat_inbox") or {}
+    alerts_all = (S.get("alerts") or {}).get("items") or []
+    payload["domains"] = domains.summary(doms(), S.get("sources") or [], S.get("dashboards") or [], tags,
+                                         [r for r in inbox.get("rows") or []
+                                          if r.get("state") in ("rejected", "fixed", "replied")],
+                                         alerts_all, payload.get("published") or [])
+    payload["domain"] = did
+    payload["domain_chosen"] = bool(S.get("domain"))
+    payload["domain_info"] = next((x for x in payload["domains"] if x["id"] == did), None)
+    payload["personas"] = all_personas(did)
+    payload["dashboards"] = [d for d in S.get("dashboards") or [] if in_dom(d)]
+    payload["published"] = [d for d in payload.get("published") or [] if in_dom(d)]
+    payload["sources"] = [x for x in S.get("sources") or [] if not x.get("fqn") or domain_of(x["fqn"]) == did]
+    if inbox.get("rows") is not None:
+        rows = [r for r in inbox["rows"] if r.get("dashboard_id") in ids]
+        payload["uat_inbox"] = {**inbox, "rows": rows,
+                                "badge_requests": sum(1 for r in rows if r.get("state") == "rejected" and r.get("mine_owner")),
+                                "badge_recheck": sum(1 for r in rows if r.get("state") in ("fixed", "replied")
+                                                     and r.get("mine_reviewer"))}
+        payload["attention"] = uat.attention(rows)
+    if S.get("alerts"):
+        items = [a for a in alerts_all if domain_of(a.get("semantic_view") or "") == did]
+        payload["alerts"] = {**S["alerts"], "items": items,
+                             "firing": sum(1 for a in items if a.get("active") and a.get("last_status") == "fired")}
 
 
 def _describe_cached(fqn):
@@ -394,25 +510,25 @@ def _describe_cached(fqn):
 
 def catalog():
     if "_catalog" not in st.session_state:
-        hit = home.cache_get(S["role"])
+        hit = home.cache_get(ckey())
         if hit and hit.get("catalog") is not None:
             st.session_state["_catalog"] = hit["catalog"]
             S["catalog_skipped"] = hit.get("skipped") or []
         else:
             skipped: list = []
-            featured = {f: config.FEATURED_LABELS.get(f, "") for f in config.FEATURED_VIEWS}
-            st.session_state["_catalog"] = home.build_catalog(S["sources"], _describe_cached, featured, skipped)
+            featured = domains.featured(cur_domain(), config.FEATURED_VIEWS, config.FEATURED_LABELS)
+            st.session_state["_catalog"] = home.build_catalog(domain_sources(), _describe_cached, featured, skipped)
             # a featured view that is missing from Home always says why (no access, wrong name, no table)
-            home.featured_gaps(st.session_state["_catalog"], featured, S["sources"], skipped,
+            home.featured_gaps(st.session_state["_catalog"], featured, domain_sources(), skipped,
                                S.get("schema_errors") or {})
             S["catalog_skipped"] = skipped
-        home.cache_put(S["role"], catalog=st.session_state["_catalog"], skipped=S.get("catalog_skipped") or [])
+        home.cache_put(ckey(), catalog=st.session_state["_catalog"], skipped=S.get("catalog_skipped") or [])
     return st.session_state["_catalog"]
 
 
 def _idea_sets() -> list:
     try:
-        return store.idea_history(S["role"])
+        return store.idea_history(ckey())
     except Exception:
         return []
 
@@ -423,7 +539,7 @@ def _show_ideas(sets: list, cat: list) -> bool:
     if not ideas:
         return False
     S["suggestions"], S["suggestions_by"], S["suggestions_at"] = ideas, "cortex", sets[0].get("created_at", "")
-    home.cache_put(S["role"], suggestions=ideas, ideas_at=S["suggestions_at"])
+    home.cache_put(ckey(), suggestions=ideas, ideas_at=S["suggestions_at"])
     return True
 
 
@@ -437,7 +553,7 @@ def _featured_summary(cat):
 
 def home_suggestions(_p=None):
     """Phase 1: saved Cortex ideas (kept across deploys and catalog changes); otherwise instant catalog ideas."""
-    hit = home.cache_get(S["role"])
+    hit = home.cache_get(ckey())
     cat = catalog()
     _featured_summary(cat)
     if hit and hit.get("suggestions"):
@@ -459,17 +575,17 @@ def home_suggestions_ai(p=None):
     if (p or {}).get("fresh"):
         # "New ideas" also re-scans the semantic views, so a view added or changed since shows up
         S["schema_errors"] = {}
-        S["sources"] = list_semantic_views(session, config.DISCOVERY_SCHEMAS, S["schema_errors"])
+        S["sources"] = list_semantic_views(session, discovery(), S["schema_errors"])
         for k in ("_catalog", "_full", "_models"):
             st.session_state.pop(k, None)
-        home.cache_put(S["role"], catalog=None, skipped=None)
+        home.cache_put(ckey(), catalog=None, skipped=None)
         _featured_summary(catalog())
     try:
         # 'New ideas' = the next themes per audience, never the ones already on screen
         avoid = home.shown_themes(on_screen, catalog()) if (p or {}).get("fresh") else {}
         sug = home.ai_suggestions(cortex(), catalog(), avoid)
         try:
-            store.save_ideas(S["role"], home.catalog_signature(catalog()), sug, S["role"])
+            store.save_ideas(ckey(), home.catalog_signature(catalog()), sug, S["role"])
         except Exception:
             pass
         sets = _idea_sets()
@@ -490,8 +606,457 @@ def home_suggestions_ai(p=None):
         S["suggestions_by"] = "catalog-final"
 
 
+# ------------------------------------------------------------------------------ personas: guidance, typed-in roles
+def _persona_store(did: str) -> dict:
+    """Persona guidance and typed-in personas for this workspace, read once per session (AA_APP_SETTINGS)."""
+    cache = st.session_state.setdefault("_personas", {})
+    if did not in cache:
+        lens = {k.split(":")[-1]: v for k, v in store.list_settings(f"lens:{did}:").items()}
+        try:
+            mine = json.loads((store.get_setting(f"mypersonas:{did}:{viewer_key() or 'anon'}") or {}).get("setting_value") or "[]")
+        except Exception:
+            mine = []
+        cache[did] = {"lens": lens, "mine": [x for x in mine if isinstance(x, dict) and x.get("id")]}
+    return cache[did]
+
+
+def _forget_personas(did: str):
+    st.session_state.setdefault("_personas", {}).pop(did, None)
+
+
+def _with_lens(did: str, per: dict) -> dict:
+    """Attach the persona guidance: stored (edited / approved) > seed from research (reviewed) > drafted by Cortex."""
+    raw = _persona_store(did)["lens"].get(per["id"])
+    try:
+        stored = json.loads(raw) if raw else None
+    except Exception:
+        stored = None
+    if stored:
+        return {**per, "watches": stored.get("watches") or [], "lens_status": stored.get("status") or "reviewed",
+                "lens_by": stored.get("by") or ""}
+    seed = domain_packs.lens_seed(did, per["id"])
+    if seed:
+        return {**per, "watches": seed, "lens_status": "reviewed", "lens_by": "research (seed)"}
+    return {**per, "watches": per.get("watches") or [], "lens_status": "draft", "lens_by": "Cortex"}
+
+
+def all_personas(did: str) -> list:
+    try:
+        built = domain_packs.personas(did)
+        if not built:
+            return []
+        return [_with_lens(did, p_) for p_ in built] + [_with_lens(did, p_) for p_ in _persona_store(did)["mine"]]
+    except Exception:
+        return domain_packs.personas(did)
+
+
+def find_persona(did: str, pid: str):
+    return next((p_ for p_ in all_personas(did) if p_["id"] == pid), None) if pid else None
+
+
+def persona_draft(p):
+    """Typed-in role -> persona card drafted by Cortex (reviewed by the person before it is used)."""
+    dom = cur_domain()
+    started = time.time()
+    d = home.draft_persona(cortex(), catalog(), str((p or {}).get("text") or ""), dom.get("company") or "")
+    S["persona_draft"] = d
+    log_ai("persona_draft", d["from_text"], json.dumps(d)[:4000], "Cortex AI_COMPLETE", "valid", started)
+
+
+def persona_add(p):
+    d = S.get("persona_draft")
+    if not d:
+        raise ValueError("Describe your role first.")
+    did = cur_domain().get("id", "")
+    label = re.sub(r"[^\w &/,.()+-]", "", str((p or {}).get("label") or d["label"]))[:40].strip() or d["label"]
+    pid = "my_" + re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:30]
+    mine = [x for x in _persona_store(did)["mine"] if x["id"] != pid]
+    mine.append({**d, "id": pid, "label": label, "created_by": viewer_name()})
+    store.set_setting(f"mypersonas:{did}:{viewer_key() or 'anon'}", json.dumps(mine[-12:]))
+    _forget_personas(did)
+    S["persona_draft"], S["persona_new"] = None, pid
+    S["notice"] = f"Added '{label}' to your personas. Its guidance is marked 'drafted by Cortex' until you approve it."
+
+
+def persona_remove(p):
+    did = cur_domain().get("id", "")
+    pid = str((p or {}).get("persona") or "")
+    mine = [x for x in _persona_store(did)["mine"] if x["id"] != pid]
+    store.set_setting(f"mypersonas:{did}:{viewer_key() or 'anon'}", json.dumps(mine))
+    _forget_personas(did)
+    S["persona_new"] = None
+
+
+def lens_save(p):
+    """Edit or approve what a role watches (persona guidance). Stored as data; no code change."""
+    did = cur_domain().get("id", "")
+    per = find_persona(did, str((p or {}).get("persona") or ""))
+    if not per:
+        raise ValueError("Pick a persona first.")
+    items = p.get("watches") if isinstance(p.get("watches"), list) else per.get("watches") or []
+    watches = [re.sub(r"\s+", " ", str(x)).strip()[:60] for x in items if str(x).strip()][:10]
+    if not watches:
+        raise ValueError("List at least one thing this role watches.")
+    store.set_setting(f"lens:{did}:{per['id']}", json.dumps({"watches": watches, "status": "reviewed", "by": viewer_name()}))
+    _forget_personas(did)
+    S["notice"] = f"Saved what the {per['label']} watches."
+    if isinstance(p.get("watches"), list):                 # edited: Cortex writes a new set with the new guidance
+        persona_ideas({"persona": per["id"], "fresh": True})
+        S["notice"] += " Cortex wrote new ideas with it."
+
+
+def _persona_lane(did: str, per: dict, c: dict) -> list:
+    """Metric labels in the persona's lane: its reviewed layout's metrics, or the metrics a typed-in persona chose."""
+    if per.get("custom"):
+        return list(per.get("metrics") or [])
+    return home._labels_for(c, domain_packs.lane_metrics(did, per["id"]))
+
+
+def _persona_engine(per: dict):
+    """Engine over the workspace's featured view for this persona's audience, and the data-through date."""
+    c = home._persona_views(catalog())[0]
+    m = model_for(c["fqn"])
+    b = infer_bindings(m)
+    prof = profile_for(m, b, per["audience"])
+    through = str(((prof.as_dict() or {}).get("calendar") or {}).get("max_date") or "")
+    return m, b, prof, through
+
+
+def persona_movers(did: str, per: dict, lane_labels: list, eng_parts):
+    """What moved for this persona: its metrics, last 13 weeks vs the same weeks last year, by its main breakdown.
+    Computed with the governed analysis tiles (SEMANTIC_VIEW queries); the findings are exact, not model text."""
+    m, b, prof, through = eng_parts
+    eng = Engine(session, m, b, prof, cortex(), store, qcache(), S["sql_log"], defer_ml=True,
+                 opts={"grain": None, "compare": "prior", "filters": {}})
+    by_label = {x.label.lower(): x.id for x in m.metrics}
+    ids = [by_label[x.lower()] for x in lane_labels if x.lower() in by_label]
+    if not ids:
+        ids = [x for x in [b.primary_metric, *(b.supporting_metrics or [])] if x][:5]
+    dim_by = {x.name.upper(): x.id for x in m.categorical_dimensions}
+    dims = [dim_by[n] for n in domain_packs.lane_dimensions(did, per["id"]) if n in dim_by and not n.endswith("_ID")]
+    dims += [x for x in [b.segment_dimension, b.region_dimension] if x and x not in dims]
+    out = []
+    for mid in ids[:6]:
+        dim = next((d_ for d_ in dims if eng.allowed(mid, d_)), None)
+        if not dim:
+            continue
+        try:
+            r = eng.change_bars({"metric_id": mid, "dimension": dim})
+        except Exception:
+            continue
+        out.append({"metric": eng.mlabel(mid), "dimension": eng.dlabel(dim),          # metric named first, so the
+                    "finding": f"{eng.mlabel(mid)} by {eng.dlabel(dim).lower()}: {r['finding']}"})   # card reads alone
+    return out
+
+
+def persona_ideas(p=None):
+    """Ideas for ONE persona, written by Cortex at run time from the persona's role and guidance and from what moved
+    in the data (movers computed by governed SQL). Checked in code: real metrics, in the persona's lane. A saved set
+    is reused only while the data is the same week; new data -> new ideas. 'New ideas' asks for a fresh set."""
+    p = p or {}
+    dom = cur_domain()
+    did = dom.get("id", "")
+    per = find_persona(did, p.get("persona") or "")
+    if not per:
+        raise ValueError("Pick a persona first.")
+    key = f"{ckey()}#{per['id']}"
+    cat = catalog()
+    views = home._persona_views(cat)
+    if not views:
+        raise ValueError("No governed data in this workspace yet.")
+    shown = ((S.get("persona_ideas") or {}).get(per["id"]) or {}).get("ideas") or []
+    lane = _persona_lane(did, per, views[0])
+    started = time.time()
+    try:
+        parts = _persona_engine(per)
+        through = parts[3]
+    except Exception:
+        parts, through = None, ""
+    sig = f"{home.catalog_signature(cat)}|{through}"
+    sets = [] if p.get("fresh") else _persona_sets(key)
+    if sets and sets[0].get("ideas") and str(sets[0].get("catalog_sig") or "").endswith(f"|{through}") and through:
+        S["persona_ideas"] = {**(S.get("persona_ideas") or {}), per["id"]: {
+            "ideas": sets[0]["ideas"], "by": "cortex", "at": sets[0].get("created_at", ""), "through": through}}
+        return
+    try:
+        movers = persona_movers(did, per, lane, parts) if parts else []
+    except Exception:
+        movers = []
+    ideas, by = None, "cortex"
+    if (S["features"] or {}).get("complete"):
+        try:
+            avoid = [x["title"] for x in shown] if p.get("fresh") else None
+            ideas = home.persona_ideas(cortex(), cat, per, dom.get("company") or "", avoid, per.get("watches"),
+                                       lane, movers, through)
+            try:
+                store.save_ideas(key, sig, ideas, S["role"])
+            except Exception:
+                pass
+            store.log_ai("persona_ideas", "", per["label"], json.dumps(ideas)[:4000],
+                         with_tokens("Cortex AI_COMPLETE", started), "valid", time.time() - started)
+        except Exception as exc:
+            store.log_ai("persona_ideas", "", per["label"], str(exc)[:400], "Cortex AI_COMPLETE", "fallback",
+                         time.time() - started)
+    if not ideas:
+        if shown and p.get("fresh"):
+            raise ValueError(f"Cortex couldn't write new ideas for the {per['label']} right now; the current ones are kept.")
+        ideas, by = home.movers_fallback(cat, per, movers, lane), "movers"
+        if not ideas:
+            ideas, by = home.persona_fallback(cat, per, domain_packs.persona_tiles(did, per["id"])), "questions"
+    S["persona_ideas"] = {**(S.get("persona_ideas") or {}), per["id"]: {
+        "ideas": ideas, "by": by, "at": time.strftime("%Y-%m-%d %H:%M"), "through": through}}
+
+
+def _persona_sets(key: str) -> list:
+    try:
+        return store.idea_history(key, limit=1)
+    except Exception:
+        return []
+
+
+# ------------------------------------------------------------------------------ Set me up (agentic interview)
+SETUP_WORRIES = ["Why a key number moved and what is driving it", "Early warning before a problem grows",
+                 "Which segments, products or regions need attention", "How we are tracking against last year"]
+
+
+def setup_start(_p=None):
+    """Set me up, step 1: a short interview. Suggested answers come from this workspace (its personas and metrics);
+    the person can click them or type their own."""
+    dom = cur_domain()
+    did = dom.get("id", "")
+    built = [x for x in domain_packs.personas(did) or [] if not x.get("custom")]
+    if not built:
+        raise ValueError("Set me up works in a domain workspace (Retail, Finance or CPG).")
+    views = home._persona_views(catalog())
+    if not views:
+        raise ValueError("No governed data in this workspace yet.")
+    mets = [m["label"] for m in views[0]["metrics"]
+            if not re.search(r"(PLAN|TARGET|BUDGET|VARIANCE|_VS_)", m["id"].split(".")[-1].upper())][:10]
+    company = dom.get("company") or dom.get("name") or "your company"
+    S["setup"] = {"stage": "interview", "company": company, "domain": dom.get("name") or "", "questions": [
+        {"id": "role", "q": "What is your role?", "hint": "e.g. Head of collections, regional sales manager",
+         "suggest": [x["label"] for x in built][:6], "multi": False},
+        {"id": "own", "q": "What are you responsible for?", "hint": "The numbers, products, regions or customers you own",
+         "suggest": mets, "multi": True},
+        {"id": "decide", "q": "Which decisions do you make each week?", "hint": "What you change or approve",
+         "suggest": [str(x.get("decides") or "") for x in built if x.get("decides")][:5], "multi": True},
+        {"id": "worry", "q": "What do you need to see or explain right now?", "hint": "What worries you, or what your boss asks",
+         "suggest": SETUP_WORRIES, "multi": True}]}
+
+
+def _setup_text(answers: dict) -> str:
+    parts = [("Role", "role"), ("Responsible for", "own"), ("Weekly decisions", "decide"), ("Needs now", "worry")]
+    clean = lambda v: re.sub(r"\s+", " ", str(v or "")).strip()[:120]
+    return " ".join(f"{k}: {clean(answers.get(i))}." for k, i in parts if clean(answers.get(i)))[:300]
+
+
+def setup_propose(p):
+    """Set me up, step 2: Cortex drafts the person's persona from the answers; persona ideas (data-aware, checked
+    in code) become the proposed dashboards; the domain's alert library gives the proposed alerts. Nothing is
+    built yet: the person ticks what they want."""
+    st_ = S.get("setup") or {}
+    answers = {k: str(v)[:300] for k, v in ((p or {}).get("answers") or {}).items() if isinstance(k, str)}
+    if not str(answers.get("role") or "").strip():
+        raise ValueError("Tell me your role first.")
+    dom = cur_domain()
+    did = dom.get("id", "")
+    started = time.time()
+    d = home.draft_persona(cortex(), catalog(), _setup_text(answers), dom.get("company") or "")
+    log_ai("setup_persona", d["from_text"], json.dumps(d)[:4000], "Cortex AI_COMPLETE", "valid", started)
+    S["persona_draft"] = d
+    persona_add({"label": d["label"]})
+    pid = S.get("persona_new")
+    persona_ideas({"persona": pid})
+    ideas = ((S.get("persona_ideas") or {}).get(pid) or {}).get("ideas") or []
+    if not ideas:
+        raise ValueError("I couldn't find dashboards for that role in this data. Try describing what you decide.")
+    per = find_persona(did, pid) or {}
+    wanted = {str(x).lower() for x in (per.get("metrics") or [])} | {str(m).lower() for i in ideas for m in i.get("metrics") or []}
+    try:
+        tpls = alert_template_list()
+    except Exception:
+        tpls = []
+    tpls = sorted([t for t in tpls if not t.get("set_up")], key=lambda t: t["metric_label"].lower() not in wanted)[:3]
+    S["setup"] = {**st_, "stage": "propose", "answers": answers,
+                  "persona": {k: per.get(k) for k in ("id", "label", "owns", "decides", "watches", "metrics", "missing")},
+                  "dashboards": [{"i": n, "title": i.get("title") or "", "why": i.get("signal") or i.get("reason") or "",
+                                  "metrics": (i.get("metrics") or [])[:5], "checked": n < 3} for n, i in enumerate(ideas[:5])],
+                  "alerts": [{"id": t["id"], "title": t["title"], "metric": t["metric_label"], "note": t.get("note") or "",
+                              "checked": True} for t in tpls]}
+    S["notice"] = ""
+
+
+def _alert_seed(t: dict, m, dom: dict, tz: str = "UTC") -> dict:
+    """A suggested alert from the domain's alert library as an alert spec (the person's email as recipient)."""
+    f = next((x for x in m.metrics if x.name.upper() == t["metric"]), None)
+    if not f:
+        raise ValueError(f"{t['metric']} is not in this semantic view.")
+    seed = {k: t[k] for k in ("rule", "op", "value_input", "pct", "direction", "compare", "grain", "sensitivity") if k in t}
+    if t.get("by"):
+        seed["by"] = next((d.id for d in m.categorical_dimensions if d.name.upper() == t["by"]), None)
+    seed.update({"metric": f.id, "filters": {}, "recipients": [e for e in [_viewer_email()] if e],
+                 "schedule": {"freq": "weekly", "hour": 8, "weekday": 0, "tz": str(tz or "UTC")[:60]},
+                 "dashboard_id": "", "dashboard_name": f"{dom.get('company') or dom.get('name')}: {t['title']}"})
+    return seed
+
+
+def _setup_dashboard(idea: dict, pid: str) -> dict:
+    """One proposed dashboard -> a saved draft dashboard: the same route as clicking the idea, the persona's reviewed
+    layout filled from the idea's metrics (no extra AI call), every tile through the validator, then saved."""
+    route_prompt({"suggestion": idea, "prompt": idea.get("goal") or idea.get("title") or "",
+                  "audience": idea.get("audience"), "persona": pid, "leave_ok": True})
+    goal = (S.get("building") or {}).get("goal") or idea.get("goal") or ""
+    S["building"] = None
+    if S["audience"] not in PERSONAS:
+        raise ValueError("no reviewed layout for this audience")
+    ctx = data_ctx()
+    per = S.get("persona") or {}
+    spec = compose_persona(None, ctx, goal, asked=idea.get("goal") or "", variant=per.get("layout") or None)
+    spec["persona"] = {"id": per.get("id"), "label": per.get("label")}
+    spec["goal"] = goal
+    spec["display_name"] = (idea.get("title") or spec["display_name"])[:90]
+    spec["set_up_by"] = "Set me up"
+    # the idea's own metrics must be on the dashboard: any the layout lacks get a headline card + a trend (as in Review)
+    by_label = {x.label.lower(): x.id for x in model_obj().metrics}
+    used = _spec_metrics(spec)
+    want = [by_label[str(x).lower()] for x in idea.get("metrics") or [] if str(x).lower() in by_label]
+    extra = [x for x in dict.fromkeys(want) if x not in used]
+    spec, _gov = apply_review(ctx, spec, used + extra, [])
+    if extra:
+        add_metric_charts(ctx, spec, extra)
+    saved = store.save_dashboard(spec["display_name"], S["source"]["fqn"], S["audience"], spec["template_id"],
+                                 spec["template_version"], S["bindings"], None, layout=spec)
+    return {"dashboard_id": saved["dashboard_id"], "name": spec["display_name"]}
+
+
+def setup_build(p):
+    """Set me up, step 3: build what the person ticked: dashboards saved as drafts, alerts created, a Start-here brief."""
+    if must_confirm_leave("setup_build", p):
+        return
+    st_ = S.get("setup") or {}
+    if st_.get("stage") != "propose":
+        raise ValueError("Answer the questions first.")
+    pid = (st_.get("persona") or {}).get("id") or ""
+    ideas = ((S.get("persona_ideas") or {}).get(pid) or {}).get("ideas") or []
+    pick = {int(x) for x in (p or {}).get("dashboards") or [] if str(x).isdigit()}
+    picked_alerts = {str(x) for x in (p or {}).get("alerts") or []}
+    if not pick and not picked_alerts:
+        raise ValueError("Tick at least one dashboard or alert.")
+    built, failed = [], []
+    for n in sorted(pick):
+        if n >= len(ideas):
+            continue
+        try:
+            built.append({**_setup_dashboard(ideas[n], pid), "why": next((x["why"] for x in st_.get("dashboards") or []
+                                                                         if x["i"] == n), "")})
+        except Exception as exc:
+            failed.append({"name": ideas[n].get("title") or "", "reason": str(exc)[:160]})
+    made, skipped = [], []
+    dom = cur_domain()
+    sv = _template_view(dom)
+    for t in [x for x in domain_packs.alert_templates(dom.get("id", "")) if x["id"] in picked_alerts]:
+        try:
+            m = _alert_model(sv)
+            _m, spec, issues = _alert_draft(_alert_seed(t, m, dom, (p or {}).get("tz") or "UTC"), sv=sv)
+            S["alert_draft"] = None
+            if issues:
+                why = (" ".join(issues) if _viewer_email() else
+                       "your Snowflake user has no email address; add a recipient in My alerts")
+                skipped.append({"name": t["title"], "reason": why[:200]})
+                continue
+            store.save_alert(spec, alerts.check_sql(m, spec), "")
+            made.append({"name": t["title"], "sentence": alerts_core.describe(spec)})
+        except Exception as exc:
+            S["alert_draft"] = None
+            skipped.append({"name": t["title"], "reason": str(exc)[:200]})
+    S.update(spec=None, draft=None, dashboard=None, results={}, narratives={}, building=None, saved_sig="", step="home")
+    S["dashboards"] = store.list_dashboards()
+    try:
+        alerts_open()
+    except Exception:
+        pass
+    first = built[0] if built else None
+    brief = (f"Start with '{first['name']}'" + (f": {first['why']}" if first and first.get("why") else ".")) if first else ""
+    S["setup"] = {"stage": "done", "persona": st_.get("persona"), "domain": st_.get("domain"), "company": st_.get("company"), "built": built, "failed": failed,
+                  "alerts_made": made, "alerts_skipped": skipped, "brief": brief}
+    S["persona_new"] = pid
+    S["notice"] = (f"Set up {len(built)} dashboard{'s' if len(built) != 1 else ''}"
+                   + (f" and {len(made)} alert{'s' if len(made) != 1 else ''}" if made else "")
+                   + f" for the {(st_.get('persona') or {}).get('label') or 'you'}.")
+
+
+def work_close(p):
+    """Close the dashboard / review on screen and go back to a clean Home. Unsaved changes: asked first
+    (Save / Discard / Cancel). A saved dashboard stays in 'Your drafts'."""
+    if must_confirm_leave("work_close", p):
+        return
+    S.update(spec=None, draft=None, dashboard=None, results={}, narratives={}, building=None, saved_sig="",
+             persona=None, step="home", validation=None)
+    S["notice"] = "Closed. Saved dashboards stay under 'Your drafts'."
+
+
+def _published_ids() -> set:
+    try:
+        return {str(x.get("dashboard_id")) for x in (S.get("published") or visible_published() or [])}
+    except Exception:
+        return {str(x.get("dashboard_id")) for x in S.get("published") or []}
+
+
+def deletable_drafts() -> list:
+    """Drafts the signed-in person may delete: their own (first saved by them) and not published."""
+    me = (viewer_key() or "").upper()
+    pub = _published_ids()
+    return [d["dashboard_id"] for d in S.get("dashboards") or []
+            if str(d.get("dashboard_id")) not in pub and (not me or str(d.get("owner") or "").upper() == me)]
+
+
+def dashboard_delete(p):
+    """Delete a draft: hidden from 'Your drafts' (AA_APP_SETTINGS dash_hidden:<id>); its saved versions stay in
+    AA_DASHBOARDS for audit and can be restored by an admin."""
+    did = str((p or {}).get("dashboard_id") or "")
+    d = next((x for x in S.get("dashboards") or [] if x["dashboard_id"] == did), None)
+    if not d:
+        raise ValueError("That draft is no longer there.")
+    if did in _published_ids():
+        raise ValueError(f"'{d['name']}' is published; it stays while it is in the Portal.")
+    if did not in deletable_drafts():
+        raise ValueError(f"Only the person who created '{d['name']}' can delete it.")
+    store.set_setting(f"dash_hidden:{did}", json.dumps({"by": viewer_name(), "at": time.strftime("%Y-%m-%d %H:%M")}))
+    if (S.get("dashboard") or {}).get("dashboard_id") == did:
+        S.update(spec=None, draft=None, dashboard=None, results={}, narratives={}, saved_sig="", step="home")
+    S["dashboards"] = store.list_dashboards()
+    S["notice"] = f"Deleted the draft '{d['name']}'. Its saved versions are kept in Snowflake for audit."
+
+
+def setup_quick(p):
+    """Set me up, quick path ('Just create my persona', replaces '+ Your role'): Cortex drafts the persona from the
+    role alone; it is added and selected on Home with its ideas. No dashboards are built."""
+    role = re.sub(r"\s+", " ", str((p or {}).get("role") or "")).strip()[:300]
+    if len(role) < 3:
+        raise ValueError("Tell me your role first.")
+    persona_draft({"text": role})
+    persona_add({})
+    pid = S.get("persona_new")
+    S["setup"] = None
+    try:
+        persona_ideas({"persona": pid})
+    except Exception:
+        pass
+
+
+def setup_close(_p=None):
+    S["setup"] = None
+
+
+def setup_open(p):
+    """Open one of the dashboards Set me up built (closes the Set me up panel)."""
+    S["setup"] = None
+    open_dashboard({**(p or {}), "leave_ok": True})
+
 def route_prompt(p):
     """Typed request or suggestion card -> dataset, metrics, audience. Designing happens next (compose)."""
+    if must_confirm_leave("route_prompt", p):
+        return
     started = time.time()
     sug = p.get("suggestion") or None
     prompt = str((sug or {}).get("goal") or p.get("prompt") or "").strip()[:500]
@@ -507,6 +1072,10 @@ def route_prompt(p):
         log_ai_raw("prompt_routing", prompt, json.dumps(r), r.get("by", ""), "valid", started)
     if p.get("audience") in home.AUDIENCES:
         r["audience"] = p["audience"]
+    per = find_persona(cur_domain().get("id", ""), str(p.get("persona") or ""))
+    S["persona"] = per                          # the person the dashboard is built for (domain workspaces)
+    if per:
+        r["audience"] = per["audience"]
     if not r.get("semantic_view"):
         raise ValueError("I couldn't find governed data for that request.")
     select_source({"fqn": r["semantic_view"]})
@@ -544,6 +1113,7 @@ def route_prompt(p):
     set_audience({"audience": r["audience"]})
     view = next((c for c in cat if c["fqn"] == r["semantic_view"]), {})
     S["building"] = {"goal": r["goal"], "prompt": prompt, "audience": r["audience"], "domain": view.get("label", ""),
+                     "persona": (per or {}).get("label", ""),
                      "reason": r.get("reason", ""), "by": r.get("by", ""), "metrics": len(m.metrics),
                      "dimensions": len(m.categorical_dimensions)}
     S["step"] = "home"
@@ -566,6 +1136,11 @@ def select_source(p):
     # valid metric x dimension pairs (from SHOW SEMANTIC DIMENSIONS ... FOR METRIC) so menus only offer what works
     S["model"]["metric_dims"] = {k: sorted(v) for k, v in (getattr(m, "metric_dims", None) or {}).items()}
     S["bindings"] = infer_bindings(m).as_dict()
+    lead = next((f.id for name in domain_packs.LEAD.get(domain_of(base), []) for f in m.metrics
+                 if f.name.upper() == name), None)
+    if lead:                                   # the domain's headline metric (a bank leads with balances, not bookings)
+        S["bindings"]["primary_metric"] = lead
+        S["bindings"]["supporting_metrics"] = [x for x in S["bindings"].get("supporting_metrics") or [] if x != lead]
     S["binding_errors"] = validate_bindings(m, Bindings.from_dict(S["bindings"]))
     S["binding_suggestion"] = None
     S["agents"] = (shared("agents:" + base, lambda: find_agents(session, base, config.AGENT_SCHEMAS)) if PORTAL
@@ -669,6 +1244,7 @@ def apply_spec(spec, page_id=None):
     S.update(spec=spec, results=results, facts=facts, narratives={}, step="workspace",
              profile=prof.as_dict(), tile_q=dict(eng.tile_keys), validation=None)
     S["focus_page"] = None
+    S["brief"] = None                          # a meeting brief belongs to the dashboard it was written for
     S["decisions"] = store.list_decisions(m.fqn)
     setup_filters()
 
@@ -704,13 +1280,21 @@ def compose_layout(p):
     try:
         if S["audience"] in PERSONAS and not seed_id:
             asked = str((S.get("building") or {}).get("prompt") or "").strip()[:400]   # the person's own words
-            spec = compose_persona(cortex(), ctx, goal, asked=asked)
+            per = S.get("persona") or None
+            spec = compose_persona(cortex(), ctx, goal, asked=asked,
+                                   variant=(per or {}).get("layout") or None)
+            if per:
+                spec["persona"] = {"id": per["id"], "label": per["label"]}
+                if per.get("layout") and spec.get("layout_variant") != per["layout"]:
+                    S["notice"] = (f"This data can't fill the {per['label']} layout, so the reviewed "
+                                   f"{spec['display_name']} layout is used.")
             log_ai("persona_slots", goal, json.dumps({"slots": spec["slots"], "governance": spec["governance"]})[:4000],
                    spec["provenance"], spec["slot_origin"], started)
             # the Review page says it already (origin pill): no second banner
             spec["goal"] = goal
             S["building"] = None
-            S["draft"] = {"spec": spec, "cards": metric_cards(ctx, spec), "goal": goal}
+            used = _spec_metrics(spec)   # reviewed layout: its own metrics start selected; more can be added in Review
+            S["draft"] = {"spec": spec, "cards": metric_cards(ctx, spec), "goal": goal, "selected": used, "used": used}
             S["step"] = "review"
             return
         spec = compose(cortex(), ctx, goal, seed)
@@ -814,6 +1398,13 @@ def metric_save(p):
                    "It shows a 'custom' tag until the data owner makes it governed.")
 
 
+def _spec_metrics(spec) -> list:
+    """Metric ids the spec's tiles show, in order."""
+    return list(dict.fromkeys(m for pg in spec["pages"] for c in pg["components"]
+                              for m in [c.get("metric_id"), c.get("metric2_id"), c.get("metric"), c.get("metric2"),
+                                        *(c.get("metrics") or [])] if isinstance(m, str) and m))
+
+
 def switch_layout(p):
     """Review: another reviewed layout for the same audience, filled with the same metrics (no AI call)."""
     d = S.get("draft")
@@ -823,9 +1414,18 @@ def switch_layout(p):
     spec = compose_persona(None, ctx, d["spec"].get("goal") or d.get("goal") or "", variant=str(p.get("variant") or ""),
                            reuse=d["spec"])
     spec["goal"] = d["spec"].get("goal") or d.get("goal") or ""
+    if d["spec"].get("persona"):
+        spec["persona"] = d["spec"]["persona"]
     sel = [x for x in (p.get("metrics") or []) if isinstance(x, str)]
-    S["draft"] = {**d, "spec": spec, "cards": metric_cards(ctx, spec), "selected": sel or d.get("selected"),
-                  "preview": None, "metric_preview": None}
+    if spec.get("pack"):
+        # the new layout's own metrics + any the person added in Review (kept across switches)
+        added = [x for x in (sel or d.get("selected") or []) if x not in set(d.get("used") or [])]
+        used = _spec_metrics(spec)
+        S["draft"] = {**d, "spec": spec, "cards": metric_cards(ctx, spec), "selected": used + [x for x in added if x not in used],
+                      "used": used, "preview": None, "metric_preview": None}
+    else:
+        S["draft"] = {**d, "spec": spec, "cards": metric_cards(ctx, spec), "selected": sel or d.get("selected"),
+                      "preview": None, "metric_preview": None}
     S["notice"] = f"Layout switched to {spec['display_name']}. Same metrics; review, then build."
 
 
@@ -856,10 +1456,44 @@ def build_draft(p):
     """User approved the review: chosen metrics + edited outline -> build the dashboard."""
     if not S["draft"]:
         raise ValueError("Nothing to build - design a dashboard first.")
-    spec, _gov = apply_review(data_ctx(), S["draft"]["spec"], p.get("metrics") or [], p.get("outline") or [])
+    d = S["draft"]
+    ctx = data_ctx()
+    spec, _gov = apply_review(ctx, d["spec"], p.get("metrics") or [], p.get("outline") or [])
     S["draft"] = None
+    if d.get("editing"):
+        added = add_metric_charts(ctx, spec, [x for x in (p.get("metrics") or []) if x not in set(d.get("used") or [])])
+        apply_spec(spec)
+        m = model_obj()
+        names = ", ".join(m.field(x, ("metric",)).label for x in added) if added else ""
+        S["notice"] = ("Dashboard updated; your edits are kept." + (f" Added {names} (headline cards + a trend each)."
+                                                                   if names else ""))
+        return
+    added = []
+    if d.get("used"):   # reviewed layout: metrics added in Review also get a trend chart on page 1
+        added = add_metric_charts(ctx, spec, [x for x in (p.get("metrics") or []) if x not in set(d["used"])])
     apply_spec(spec)
-    S["notice"] = f"Built {len(spec['pages'])} page{'s' if len(spec['pages']) != 1 else ''} from your review."
+    names = ", ".join(model_obj().field(x, ("metric",)).label for x in added) if added else ""
+    S["notice"] = (f"Built {len(spec['pages'])} page{'s' if len(spec['pages']) != 1 else ''} from your review."
+                   + (f" Added {names} (headline cards + a trend each)." if names else ""))
+
+
+def add_metric_charts(ctx, spec, metric_ids) -> list:
+    """Metrics added when updating a built dashboard: apply_review already put them in the headline cards; each
+    also gets a trend chart on the first page (up to 3), checked by the validator like any manual tile."""
+    m = model_obj()
+    valid = {x.id for x in m.metrics}
+    added = [x for x in metric_ids if x in valid]
+    page = spec["pages"][0]
+    for mid in added[:3]:
+        try:
+            out = manual_tile(ctx, spec, page["page_id"], {"type": "trend_chart", "metric": mid,
+                                                          "title": m.field(mid, ("metric",)).label + " trend"})
+            out["tile"]["width"] = out["tile"].get("width") or 6
+            page["components"].append(out["tile"])
+            spec["governance"] = (spec.get("governance") or []) + out["governance"]
+        except Exception:
+            pass
+    return added
 
 
 def redraft(p):
@@ -1293,6 +1927,10 @@ def publish(p):
     name = str(p.get("name") or spec.get("display_name") or "Dashboard")[:200]
     roles = [r for r in (p.get("roles") or []) if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", str(r))][:20]
     users = [u.strip() for u in (p.get("users") or []) if str(u).strip()][:50]
+    fr = validation_freshness()
+    if fr["state"] != "fresh":
+        raise ValueError("Validate before publishing: " + (" ".join(fr.get("reasons") or [])
+                                                            or "a validation is still running."))
     if not S["dashboard"]:
         save_dashboard({"name": name})
     did = S["dashboard"]["dashboard_id"]
@@ -1379,7 +2017,8 @@ def viewer_key() -> str:
 
 
 # Actions that call Cortex on request. Viewing (load_page, narrative, enrich) is never limited.
-AI_ACTIONS = {"route_prompt", "compose_layout", "recommend_layout", "suggest_bindings", "home_suggestions_ai",
+AI_ACTIONS = {"route_prompt", "compose_layout", "recommend_layout", "suggest_bindings", "home_suggestions_ai", "persona_ideas",
+              "persona_draft", "lens_save", "setup_propose", "meeting_brief", "setup_quick",
               "tile_add", "tile_ask", "ask", "sb_draft", "metrics_redraft", "redraft", "build_draft",
               "page_regenerate", "page_add", "metric_define", "sb_suggest"}
 
@@ -1462,6 +2101,8 @@ def save_sharing(did: str) -> None:
 
 
 def open_published(p):
+    if not PORTAL and must_confirm_leave("open_published", p):
+        return
     d = next((x for x in S["published"] if x["dashboard_id"] == p.get("dashboard_id")), None)
     if not d:
         S["published"] = store.list_published()
@@ -1479,6 +2120,7 @@ def open_published(p):
     S["view"] = {**{"grain": None, "compare": "prior", "filters": {}}, **vs}
     set_audience({"audience": d["audience"]})
     apply_spec(d["layout_spec"])
+    S["saved_sig"], S["draft"] = spec_sig(S["spec"]), None
     S["viewer_mode"] = True
     S["dashboard"] = {"dashboard_id": d["dashboard_id"], "version": d["version"], "name": d["name"],
                       "published": True, "published_at": d.get("published_at"), "published_by": d.get("published_by"),
@@ -1638,6 +2280,89 @@ def narrative(p):
         V["pages"][page_id].update(validation.page_summary(V, page_id))
 
 
+# ------------------------------------------------------------------------------ meeting brief (28 Oct)
+def _brief_clean(items, n: int, k: int, facts: list, removed: list) -> list:
+    """Keep only statements whose figures all match a governed fact (QA-08 rule); count what was removed."""
+    out = []
+    for x in items or []:
+        t = re.sub(r"\s+", " ", str(x or "")).strip()[:k]
+        if not t:
+            continue
+        _m, bad = validation.grounded(t, facts)
+        if bad:
+            removed.append(t)
+            continue
+        out.append(t)
+    return out[:n]
+
+
+def meeting_brief(p=None):
+    """One-page meeting brief for the dashboard on screen: Cortex writes it ONLY from the dashboard's governed facts
+    (every page), and every figure is checked against those facts before it is shown (unmatched statements dropped)."""
+    from ai_services import _json_from_text
+    spec = S.get("spec")
+    if not spec:
+        raise ValueError("Open a dashboard first.")
+    todo = [pg["page_id"] for pg in spec["pages"] if not (S.get("facts") or {}).get(pg["page_id"])]
+    if todo:
+        try:
+            rebuild_pages(todo)                       # the brief covers every page, not only the one on screen
+        except Exception:
+            pass
+    facts, pages = [], []
+    for pg in spec["pages"]:
+        fs = (S.get("facts") or {}).get(pg["page_id"]) or []
+        if fs:
+            pages.append(pg["label"])
+            facts += [f"[{pg['label']}] {f}" for f in fs[:25]]
+    if not facts:
+        raise ValueError("This dashboard has no computed figures yet; refresh it and try again.")
+    name = (S.get("dashboard") or {}).get("name") or spec.get("display_name") or "Dashboard"
+    per = spec.get("persona") if isinstance(spec.get("persona"), dict) else {}
+    who = (per or {}).get("label") or S.get("audience", "").replace("_", " ")
+    flt = "; ".join(f"{k.split('.')[-1].replace('_', ' ').title()} = {', '.join(map(str, v))}"
+                    for k, v in ((S.get("view") or {}).get("filters") or {}).items() if v)
+    prompt = (
+        f"You prepare a one-page meeting brief for the {who} about the dashboard '{name}'. They must explain it to "
+        "their boss in a meeting today. Use ONLY the governed facts below (computed by SQL on a Snowflake semantic view); "
+        "never add a number that is not in them, never guess causes the facts do not show. Plain business English, short "
+        "sentences.\nFacts:\n" + "\n".join(f"- {f}" for f in facts[:60]) +
+        '\nRespond with JSON only: {"headline": "<one sentence, the main point with its number>", '
+        '"numbers": [{"label": "<metric>", "value": "<value as in the facts>", "change": "<change as in the facts>"}] (3-4), '
+        '"drivers": ["<what is driving it, from the facts>"] (2-3), "risks": ["<what to watch>"] (1-3), '
+        '"actions": ["<suggested action>"] (2-3), "questions": [{"q": "<question the boss may ask>", '
+        '"a": "<answer from the facts>"}] (2-3)}')
+    started = time.time()
+    raw, prov = cortex().complete(prompt)
+    d = _json_from_text(raw)
+    removed: list = []
+    head = _brief_clean([d.get("headline")], 1, 240, facts, removed)
+    nums = []
+    for x in (d.get("numbers") or [])[:6]:
+        if not isinstance(x, dict):
+            continue
+        txt = f"{x.get('label', '')}: {x.get('value', '')} ({x.get('change', '')})"
+        if _brief_clean([txt], 1, 200, facts, removed):
+            nums.append({"label": str(x.get("label") or "")[:60], "value": str(x.get("value") or "")[:30],
+                         "change": str(x.get("change") or "")[:60]})
+    qs = []
+    for x in (d.get("questions") or [])[:4]:
+        if isinstance(x, dict) and _brief_clean([f"{x.get('q', '')} {x.get('a', '')}"], 1, 400, facts, removed):
+            qs.append({"q": str(x.get("q") or "")[:160], "a": str(x.get("a") or "")[:260]})
+    S["brief"] = {
+        "name": name, "for": who, "pages": pages, "filters": flt or "No filters",
+        "period": ((S.get("profile") or {}).get("calendar") or {}).get("current_label") or "",
+        "through": _data_through(), "at": time.strftime("%Y-%m-%d %H:%M"), "by": viewer_name(),
+        "headline": head[0] if head else "", "numbers": nums[:4],
+        "drivers": _brief_clean(d.get("drivers"), 3, 220, facts, removed),
+        "risks": _brief_clean(d.get("risks"), 3, 220, facts, removed),
+        "actions": _brief_clean(d.get("actions"), 3, 220, facts, removed),
+        "questions": qs[:3], "removed": len(removed), "facts": len(facts), "sv": sv_fqn(),
+        "provenance": f"Cortex AI_COMPLETE ({prov}) over {len(facts)} governed facts; every figure checked (QA-08 rule)"}
+    log_ai("meeting_brief", "\n".join(facts)[:4000], json.dumps(S["brief"])[:4000], S["brief"]["provenance"],
+           "valid" if not removed else "repaired", started)
+
+
 # ------------------------------------------------------------------------------ validation (QA)
 def _physical():
     """DESCRIBE SEMANTIC VIEW read for base tables, keys, relationships (once per view per session)."""
@@ -1681,6 +2406,60 @@ def validation_stale(page) -> list:
             and all(cid in tiles for cid in stale)):
         return []
     return stale
+
+
+def _data_through() -> str:
+    return str(((S.get("profile") or {}).get("calendar") or {}).get("max_date") or "")
+
+
+def validation_freshness() -> dict:
+    """Is the last validation still valid for what is on screen? Fresh = it ran after the last change to any tile,
+    on the data as it is now, covered every page, and no tile fails to run. Publishing needs it fresh."""
+    spec = S.get("spec")
+    if not spec:
+        return {"state": "none", "reasons": []}
+    V = S.get("validation") or {}
+    tiles = V.get("tiles") or {}
+    filters = (S.get("view") or {}).get("filters") or {}
+    job = _val_job()
+    if job and job["running"]:
+        return {"state": "running", "reasons": [], "done": len(job["merged"]), "total": len(job["cids"])}
+    changed, unchecked, unloaded, broken = [], [], [], []
+    for pg in spec["pages"]:
+        comps = [c for c in pg["components"] if c.get("state") != "omitted" and c["type"] not in validation.NON_DATA]
+        loaded = [c for c in comps if f"{pg['page_id']}/{c['component_id']}" in S["results"]]
+        if comps and not loaded:
+            unloaded.append(pg["label"])
+            continue
+        for c in comps:
+            cid = f"{pg['page_id']}/{c['component_id']}"
+            res = S["results"].get(cid) or {}
+            if res.get("status") == "error":
+                broken.append(c.get("title") or cid)
+                continue
+            if res.get("status") != "ready":
+                continue
+            t = tiles.get(cid)
+            if not t:
+                unchecked.append(cid)
+            elif t.get("sig") != validation.signature(res, filters):
+                changed.append(cid)
+    reasons = []
+    if not tiles:
+        return {"state": "none", "reasons": ["Not validated yet."], "broken": broken}
+    if V.get("data_through") and _data_through() and V["data_through"] != _data_through():
+        reasons.append(f"Data refreshed since the check (checked on data through {V['data_through']}, "
+                       f"now through {_data_through()}).")
+    if changed:
+        reasons.append(f"{len(changed)} tile(s) changed after the check.")
+    if unchecked:
+        reasons.append(f"{len(unchecked)} tile(s) not checked yet.")
+    if unloaded:
+        reasons.append(f"Page(s) not checked: {', '.join(unloaded[:4])}.")
+    if broken:
+        reasons.append(f"{len(broken)} tile(s) fail to run: {', '.join(broken[:3])}. Fix them first.")
+    return {"state": "stale" if reasons else "fresh", "reasons": reasons, "at": V.get("at"),
+            "changed": changed + unchecked, "broken": broken, "data_through": V.get("data_through")}
 
 
 def validation_prune() -> None:
@@ -1737,8 +2516,16 @@ def validate_all(p=None):
             rebuild_pages([pg["page_id"]])
     force = bool((p or {}).get("force"))
     stale = set()
+    V = S.get("validation") or {}
+    filters = (S.get("view") or {}).get("filters") or {}
+    data_moved = bool(V.get("data_through")) and V.get("data_through") != _data_through()
     for pg in S["spec"]["pages"]:
-        stale |= {cid for cid, _ in _data_tiles(pg)} if force else set(validation_stale(pg))
+        # every tile whose shown numbers differ from what was checked (no 10-minute grace: this is a click)
+        stale |= {cid for cid, res in _data_tiles(pg)
+                  if force or data_moved or ((V.get("tiles") or {}).get(cid) or {}).get("sig") != validation.signature(res, filters)}
+    if not stale and S.get("validation"):
+        S["notice"] = "Nothing changed since the last check: every tile is still validated."
+        return
     _start_validation([pg["page_id"] for pg in S["spec"]["pages"]], stale, force=force, all_pages=True)
 
 
@@ -1820,6 +2607,7 @@ def validation_merge(_p=None):
                         "tables": sorted(set(old.get("tables") or []) | set(rep["lineage"].get("tables") or [])),
                         "joins": list(joins.values()), "nonadd_from_ddl": rep["lineage"].get("nonadd_from_ddl") or []}
     V["at"], V["queries"] = rep["at"], rep.get("queries", 0)
+    V["data_through"] = _data_through()
     V["seconds"] = round(time.time() - job["started"], 1)
     apply_resolutions()
     for page_id in job["page_ids"]:
@@ -1839,6 +2627,17 @@ def validation_merge(_p=None):
                                "lineage": V.get("lineage"), "seconds": V["seconds"],
                                "calendar": (S.get("profile") or {}).get("calendar")})
     S["validation_history"] = store.validation_history(sv_fqn(), (S.get("dashboard") or {}).get("dashboard_id") or "")
+    ov = validation_overview()
+    found = [i for i in ov.get("issues") or [] if i.get("status") in ("mismatch", "review")]
+    tiles_bad = sum(1 for i in found if i.get("cid"))
+    other = len(found) - tiles_bad                   # data-level / AI-summary findings (e.g. data health)
+    worst = "mismatch" if any(i["status"] == "mismatch" for i in found) else "review"
+    S["val_done"] = {"id": job["id"], "status": "pass" if not found else worst,
+                     "text": ("Validation finished · every number verified" if not found else
+                              "Validation finished · every number verified, " + f"{other} data note(s) to review"
+                              if not tiles_bad else
+                              f"Validation finished · {tiles_bad} tile(s)" + (f" and {other} data note(s)" if other else "")
+                              + " need attention")}
 
 
 # -- resolutions: every finding ends fixed, accepted (with a reason) or owned ------------------------------------------
@@ -2103,6 +2902,60 @@ def _alert_time(m) -> str:
     return infer_bindings(m).time_dimension
 
 
+def _alert_weekly(m) -> bool:
+    """Weekly data (one row per week): alerts compare full weeks or months, never days."""
+    return bool((domains.get(doms(), domain_of(m.fqn)) or {}).get("weekly"))
+
+
+def _template_view(dom: dict) -> str:
+    """The semantic view a domain's alert templates watch: its featured view, when it is visible to this role."""
+    have = {x.get("fqn") for x in S.get("sources") or []}
+    return next((f for f in (dom.get("featured") or {}) if f.partition("#")[0] in have), "")
+
+
+def alert_template_list() -> list:
+    dom = cur_domain()
+    sv = _template_view(dom)
+    if not sv:
+        return []
+    try:
+        m = _alert_model(sv)
+    except Exception:
+        return []
+    by_name = {f.name.upper(): f for f in m.metrics}
+    existing = {(a.get("spec") or {}).get("metric") for a in ((S.get("alerts") or {}).get("items") or [])
+                if not a.get("deleted")}
+    out = []
+    for t in domain_packs.alert_templates(dom.get("id", "")):
+        f = by_name.get(t["metric"])
+        if f:
+            out.append({**{k: t[k] for k in ("id", "title", "severity", "owner", "note")}, "metric_label": f.label,
+                        "set_up": f.id in existing})
+    return out
+
+
+def alert_template(p):
+    """Suggested alert from the domain's alert library -> the alert form, pre-filled (person reviews and saves)."""
+    dom = cur_domain()
+    t = next((x for x in domain_packs.alert_templates(dom.get("id", "")) if x["id"] == p.get("id")), None)
+    sv = _template_view(dom)
+    if not t or not sv:
+        raise ValueError("That suggested alert is not available in this workspace.")
+    m = _alert_model(sv)
+    f = next((x for x in m.metrics if x.name.upper() == t["metric"]), None)
+    if not f:
+        raise ValueError(f"{t['metric']} is not in {sv}.")
+    seed = {k: t[k] for k in ("rule", "op", "value_input", "pct", "direction", "compare", "grain", "sensitivity") if k in t}
+    if t.get("by"):
+        seed["by"] = next((d.id for d in m.categorical_dimensions if d.name.upper() == t["by"]), None)
+    seed.update({"metric": f.id, "filters": {}, "recipients": [e for e in [_viewer_email()] if e],
+                 "schedule": {"freq": "weekly", "hour": 8, "weekday": 0, "tz": str(p.get("tz") or "UTC")[:60]},
+                 "dashboard_id": "", "dashboard_name": f"{dom.get('company') or dom.get('name')}: {t['title']}"})
+    _alert_draft(seed, text="", provenance=f"{t['title']} · {t['owner']} · from the {dom.get('company')} alert library",
+                 sv=sv)
+    _open_drawer("alert")
+
+
 def _viewer_email() -> str:
     try:
         e = str(st.user.get("email") or "")
@@ -2119,10 +2972,11 @@ def _alert_draft(spec_in: dict, editing: str = "", text: str = "", question: str
     m = _alert_model(sv)
     vals = _alert_values(m)
     kinds = _alert_kinds(m)
-    spec, issues = alerts.normalize(m, spec_in, vals, _alert_time(m), kinds=kinds)
+    wk = _alert_weekly(m)
+    spec, issues = alerts.normalize(m, spec_in, vals, _alert_time(m), kinds=kinds, weekly=wk)
     S["alert_draft"] = {"spec": spec, "issues": issues, "sentence": alerts_core.describe(spec) if spec.get("metric") else "",
                         "schedule_text": alerts_core.schedule_text(spec.get("schedule")),
-                        "options": alerts.options(m, vals, kinds), "editing": editing, "text": text, "question": question,
+                        "options": alerts.options(m, vals, kinds, weekly=wk), "editing": editing, "text": text, "question": question,
                         "provenance": provenance, "preview": preview}
     return m, spec, issues
 
@@ -2166,7 +3020,7 @@ def alert_parse(p):
         raise ValueError("Type what you want to be alerted about.")
     started = time.time()
     m = _alert_model(cur.get("sv") or (S.get("source") or {}).get("fqn") or "")
-    opts = alerts.options(m, _alert_values(m), _alert_kinds(m))
+    opts = alerts.options(m, _alert_values(m), _alert_kinds(m), weekly=_alert_weekly(m))
     try:
         cx = cortex()
     except Exception:
@@ -2278,6 +3132,11 @@ def alerts_open(_p=None):
         a["recipients"] = sp.get("recipients") or []
     S["alerts"] = {"items": items, "setup": _alert_setup(), "runs": (S.get("alerts") or {}).get("runs") or {},
                    "firing": sum(1 for a in items if a.get("active") and a.get("last_status") == "fired")}
+    try:
+        S["alerts"]["templates"] = alert_template_list()
+        S["alerts"]["company"] = cur_domain().get("company") or ""
+    except Exception:
+        S["alerts"]["templates"] = []
 
 
 def alert_runs(p):
@@ -2447,6 +3306,9 @@ def agent_warehouse() -> str:
 
 
 def agent_questions():
+    dom = domains.get(doms(), domain_of(sv_fqn())) or {}
+    if dom.get("questions"):                     # the domain's own persona questions (from its business ontology)
+        return list(dom["questions"])[:4]
     b = S["bindings"]
     return [f"What was {b['primary_metric'].split('.')[-1].lower().replace('_', ' ')} by "
             f"{(b.get('segment_dimension') or b['time_dimension']).split('.')[-1].lower().replace('_', ' ')} last month?",
@@ -2462,7 +3324,11 @@ def pick_agent(agents):
 
 
 def search_service_for(fqn: str) -> str:
-    return config.SEARCH_SERVICES.get((fqn or "").upper(), "")
+    key = (fqn or "").upper().partition("#")[0]
+    for d in doms():
+        if key in (d.get("search") or {}):
+            return d["search"][key]
+    return config.SEARCH_SERVICES.get(key, "")
 
 
 def create_agent_action(_p):
@@ -2572,6 +3438,7 @@ def save_dashboard(p):
                                  (S["dashboard"] or {}).get("dashboard_id"), layout=spec)
     first = not (S.get("dashboard") or {}).get("dashboard_id")
     S["dashboard"] = {**saved, "name": name}
+    S["saved_sig"] = spec_sig(spec)
     S["dashboards"] = store.list_dashboards()
     if first:                                  # sign-offs made on the unsaved draft move to the saved dashboard
         store.adopt_uat(sv_fqn(), saved["dashboard_id"], name)
@@ -2581,6 +3448,8 @@ def save_dashboard(p):
 
 
 def open_dashboard(p):
+    if must_confirm_leave("open_dashboard", p):
+        return
     d = next((x for x in S["dashboards"] if x["dashboard_id"] == p.get("dashboard_id")), None)
     if not d:
         raise ValueError("dashboard")
@@ -2590,6 +3459,7 @@ def open_dashboard(p):
     if d.get("layout"):
         apply_spec(d["layout"])
         S["dashboard"] = {"dashboard_id": d["dashboard_id"], "version": d["version"], "name": d["name"]}
+        S["saved_sig"], S["draft"] = spec_sig(S["spec"]), None
         uat_load_entries()
         return
     tpl = get_template(d["template_id"])
@@ -2597,6 +3467,7 @@ def open_dashboard(p):
         raise ValueError("Saved layout version is no longer in the catalog; choose a current layout.")
     select_layout({"template_id": d["template_id"]})
     S["dashboard"] = {"dashboard_id": d["dashboard_id"], "version": d["version"], "name": d["name"]}
+    S["saved_sig"], S["draft"] = spec_sig(S["spec"]), None
     uat_load_entries()
 
 
@@ -2604,7 +3475,7 @@ def open_dashboard(p):
 def sb_tables(_p=None):
     """Tables/views the role can read in the allowlisted schemas (not the app's own objects), with their columns,
     the semantic views that already use them, and which tables join (metadata only)."""
-    schemas = [x for x in config.DISCOVERY_SCHEMAS if x.upper() != config.APP_SCHEMA.upper()]
+    schemas = [x for x in discovery() if x.upper() != config.APP_SCHEMA.upper()]
     tables = sb.list_tables(session, schemas)
     cat = table_finder.catalog(session, tables, schemas, S.get("sources") or [], config.APP_SCHEMA)
     S["sb"] = {"step": "pick", "tables": cat["tables"], "related": cat["related"], "suggest": None}
@@ -2687,7 +3558,8 @@ def sb_create(p):
         log_ai("semantic_view_create", ", ".join(sbs["fqns"]), ddl["sv_sql"][:3900],
                f"CREATE SEMANTIC VIEW over {len(sbs['fqns'])} tables (approved by {viewer_key() or viewer_name()})",
                "ok" if all(c["status"] != "fail" for c in out["checks"]) else "check_failed", started)
-        S["sources"] = list_semantic_views(session, config.DISCOVERY_SCHEMAS)
+        tag_view_domain(out.get("semantic_view"))
+        S["sources"] = list_semantic_views(session, discovery())
         st.session_state.pop("_catalog", None)
         home.cache_clear()
         S["sb"] = {**sbs, "spec": clean, "notes": notes, "ddl": ddl, "step": "done", "created": out}
@@ -2702,11 +3574,24 @@ def sb_create(p):
     out = sb.create(session, ddl)
     log_ai("semantic_view_create", sbs["fqn"], ddl["sv_sql"][:3900], "CREATE SEMANTIC VIEW (approved draft)", "ok", started)
     # make the new view a first-class source everywhere (Home ideas, routing, agent)
-    S["sources"] = list_semantic_views(session, config.DISCOVERY_SCHEMAS)
+    tag_view_domain(out.get("semantic_view"))
+    S["sources"] = list_semantic_views(session, discovery())
     st.session_state.pop("_catalog", None)
     home.cache_clear()
     S["sb"] = {**sbs, "spec": clean, "notes": notes, "ddl": ddl, "step": "done", "created": out}
     S["notice"] = f"Created semantic view {out['semantic_view']} — it is now available for dashboards and the agent."
+
+
+def tag_view_domain(fqn) -> None:
+    """A view built in the app belongs to the workspace it was built in."""
+    did = cur_domain().get("id", "")
+    if not fqn or not did:
+        return
+    try:
+        store.set_setting(f"viewdomain:{str(fqn).upper()}", did)
+        view_tags()[str(fqn).upper()] = did
+    except Exception:
+        pass
 
 
 def sb_use(_p=None):
@@ -2763,8 +3648,78 @@ def quality(_p):
         S["evals"] = {"configured": False, "error": str(exc)[:200], "runs": []}
 
 
+def spec_sig(spec) -> str:
+    """Fingerprint of a dashboard layout: tells saved from unsaved changes."""
+    import hashlib
+    return hashlib.md5(json.dumps(spec or {}, sort_keys=True, default=str).encode()).hexdigest() if spec else ""
+
+
+def work_state():
+    """The work in progress (a dashboard and/or its review), shown on Home as 'Continue where you left off'."""
+    spec, draft = S.get("spec"), S.get("draft")
+    if PORTAL or S.get("viewer_mode") or (not spec and not draft):
+        return None
+    d = S.get("dashboard") or {}
+    name = d.get("name") or (spec or (draft or {}).get("spec") or {}).get("display_name") or "Dashboard"
+    return {"name": name, "built": bool(spec), "in_review": bool(draft), "saved": bool(d.get("dashboard_id")),
+            "version": d.get("version"), "dirty": bool(spec) and spec_sig(spec) != S.get("saved_sig"),
+            "persona": _persona_label((spec or (draft or {}).get("spec") or {}).get("persona"))}
+
+
+def _persona_label(p) -> str:
+    return (p.get("label") or "") if isinstance(p, dict) else ""
+
+
+def must_confirm_leave(action: str, p: dict) -> bool:
+    """Starting other work while the dashboard on screen has unsaved changes: ask first (Save / Discard / Cancel).
+    Returns True when the action must wait for the answer."""
+    w = work_state()
+    if (p or {}).get("leave_ok") or not w or not w["dirty"]:
+        return False
+    S["leave"] = {"action": action, "payload": {k: v for k, v in (p or {}).items() if k != "leave_ok"},
+                  "name": w["name"], "saved": w["saved"]}
+    return True
+
+
+LEAVE_ACTIONS = {"route_prompt", "open_dashboard", "set_domain", "open_published", "setup_build", "work_close"}
+
+
+def leave_resolve(p):
+    """Answer to the unsaved-changes question: save then continue, discard then continue, or cancel."""
+    pending, S["leave"] = S.get("leave"), None
+    choice = (p or {}).get("choice")
+    if not pending or choice not in ("save", "discard") or pending["action"] not in LEAVE_ACTIONS:
+        return
+    if choice == "save":
+        save_dashboard({"name": pending["name"]})
+    msg = ai_limit_message(pending["action"], pending["payload"])
+    if msg:
+        raise ValueError(msg)
+    ACTIONS[pending["action"]]({**pending["payload"], "leave_ok": True})
+
+
+def review_current(_p=None):
+    """Dashboard -> Review: the dashboard as it is now (your edits kept) with its metrics and outline, so metrics
+    can be added or removed. 'Update dashboard' then changes this same dashboard."""
+    import copy
+    if not S.get("spec"):
+        raise ValueError("Build a dashboard first.")
+    if S.get("draft") and S["draft"].get("editing"):
+        S["step"] = "review"
+        return
+    sp = copy.deepcopy(S["spec"])
+    used = _spec_metrics(sp)
+    S["draft"] = {"spec": sp, "cards": metric_cards(data_ctx(), sp), "goal": sp.get("goal") or "", "selected": used,
+                  "editing": True, "used": used}
+    S["step"] = "review"
+
+
 def go(p):
     step = p.get("step")
+    if step == "review" and not S.get("draft") and S.get("spec"):
+        review_current()
+        S["building"] = None
+        return
     if step in ("home", "source", "metrics", "layout", "workspace", "review"):
         S["step"] = step
         S["building"] = None
@@ -2802,9 +3757,17 @@ ACTIONS = {
     "alert_runs": alert_runs, "alert_toggle": alert_toggle, "alert_delete": alert_delete, "alert_run": alert_run,
     "alert_schedule": alert_schedule, "alert_integration": alert_integration, "uat_requirement": uat_requirement, "uat_download": uat_download,
     "download_done": lambda p: S.update(download=None),
+    "set_domain": set_domain, "show_domains": show_domains, "alert_template": alert_template,
+    "persona_ideas": persona_ideas, "leave_resolve": leave_resolve, "review_current": review_current,
+    "persona_draft": persona_draft, "persona_add": persona_add, "persona_remove": persona_remove, "lens_save": lens_save,
+    "persona_draft_cancel": lambda p: S.update(persona_draft=None),
+    "setup_start": setup_start, "setup_propose": setup_propose, "setup_build": setup_build, "setup_close": setup_close,
+    "setup_open": setup_open, "setup_quick": setup_quick, "work_close": work_close, "dashboard_delete": dashboard_delete,
+    "meeting_brief": meeting_brief, "brief_close": lambda p: S.update(brief=None),
 }
 VIEWER_ACTIONS = {"set_view", "load_page", "refresh", "enrich", "narrative", "tile_ask", "ask", "go", "exit_viewer", "open_published",
-                  "add_decision", "decision_status", "quality", "boot", "home_suggestions", "home_suggestions_ai"}
+                  "add_decision", "decision_status", "quality", "boot", "home_suggestions", "home_suggestions_ai",
+                  "meeting_brief", "brief_close"}
 
 
 PORTAL_ACTIONS = VIEWER_ACTIONS - {"boot", "home_suggestions", "home_suggestions_ai"}     # nothing that builds or suggests
@@ -2835,7 +3798,9 @@ def handle(event):
     S["last_request"] = event.get("id")
     if event.get("type") != "validate_poll":     # polls run no queries of their own
         tag_queries(str(event.get("type") or ""))
-    if event.get("type") not in ("enrich", "validate", "validate_poll", "validation_open"):   # keep background messages
+    if event.get("type") in ("home_suggestions", "home_suggestions_ai"):    # keep the workspace-switch note
+        S["error"] = ""
+    elif event.get("type") not in ("enrich", "validate", "validate_poll", "validation_open"):   # keep background messages
         S["error"] = S["notice"] = ""
     fn = ACTIONS.get(event.get("type"))
     if PORTAL and event.get("type") == "go" and (event.get("payload") or {}).get("step") != "workspace":
@@ -2871,6 +3836,37 @@ def handle(event):
     return True
 
 
+def portal_workspaces(mine: list) -> dict:
+    """Portal: the workspaces that have dashboards published for this viewer, and the one they chose last."""
+    try:
+        tags = view_tags()
+        for d in mine:
+            d["_domain"] = domains.of_dashboard({"semantic_view": d.get("semantic_view"),
+                                                 "layout": d.get("layout_spec")}, doms(), tags)
+        counts: dict = {}
+        for d in mine:
+            counts[d["_domain"]] = counts.get(d["_domain"], 0) + 1
+        items = [{**{k: x.get(k) for k in ("id", "name", "company", "tagline", "blurb", "icon", "accent", "soft")},
+                  "count": counts[x["id"]]} for x in doms() if counts.get(x["id"])]
+        if "pt_domain" not in st.session_state:
+            st.session_state["pt_domain"] = load_domain_choice()
+        cur = st.session_state.get("pt_domain") or ""
+        if cur not in counts:
+            cur = ""
+        return {"items": items, "current": cur, "pick": portal_pick}
+    except Exception:
+        return {"items": [], "current": "", "pick": portal_pick}
+
+
+def portal_pick(did: str) -> None:
+    st.session_state["pt_domain"] = did or ""
+    if did:
+        try:
+            store.set_setting(f"domain:{viewer_key()}", did)
+        except Exception:
+            pass
+
+
 def portal_gate():
     """Portal mode: no ?view= shows the catalog of dashboards this viewer may open; ?view= opens one, read-only."""
     import portal_view
@@ -2898,7 +3894,8 @@ def portal_gate():
         flash = flash or S.pop("portal_flash", "") or S.get("error") or ""
         portal_view.render(mine, S.get("viewer") or "", flash, own_base_url(),
                            getattr(config, "PORTAL_URL", ""),
-                           {"can_share": can_share, "roles": portal_roles, "on_save": save_sharing})
+                           {"can_share": can_share, "roles": portal_roles, "on_save": save_sharing},
+                           portal_workspaces(mine))
         st.stop()
     global PORTAL_LOADER
     if S["features"] is None or (S.get("dashboard") or {}).get("dashboard_id") != wanted:
@@ -2945,6 +3942,14 @@ try:
 except Exception:
     pass
 payload = {k: v for k, v in S.items() if k not in ("cache", "published", "tile_q")}
+try:
+    payload["work"] = work_state()
+except Exception:
+    payload["work"] = None
+try:
+    payload["dash_deletable"] = deletable_drafts()
+except Exception:
+    payload["dash_deletable"] = []
 payload["catalog_audiences"] = list(AUDIENCES)
 payload["app_schema"] = config.APP_SCHEMA
 if S["source"] and S["step"] in ("layout", "workspace"):
@@ -2953,6 +3958,11 @@ if S["source"] and S["step"] in ("layout", "workspace"):
     except Exception:
         payload["distinct"] = {}
 payload["published"] = visible_published()
+if not PORTAL:
+    try:
+        _scope(payload)                              # the chosen workspace only (Retail / Finance / CPG)
+    except Exception as exc:
+        payload["domains"], payload["domain_error"] = [], str(exc)[:200]
 payload["portal_url"] = "" if PORTAL else getattr(config, "PORTAL_URL", "")   # left menu link to the portal
 payload["is_portal"] = bool(PORTAL)
 try:
@@ -2974,6 +3984,9 @@ try:
     if _job and _job["running"]:                     # tiles still being checked keep their "Checking" pill
         _stale = list(dict.fromkeys(_stale + [c for c in _job["cids"] if c not in _job["merged"]]))
     payload["validation_stale"] = _stale
+    payload["validation_fresh"] = validation_freshness() if S.get("spec") and not PORTAL and not S.get("viewer_mode") else None
+    payload["validation_checking"] = ([c for c in _job["cids"] if c not in _job["merged"]]
+                                      if _job and _job["running"] else [])
     payload["validation_needed"] = validation_needed()
     payload["validation_overview"] = validation_overview() if S.get("spec") and not PORTAL else None
     payload["validation_brief"] = validation_brief()

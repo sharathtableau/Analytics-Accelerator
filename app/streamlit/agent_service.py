@@ -69,7 +69,7 @@ def find_agents(session, semantic_view: str, schemas: Iterable[str]) -> list[dic
     return found
 
 
-SPEC_VERSION = "aa-spec-4"      # bump when the app-owned agent definition changes; old ones are rebuilt
+SPEC_VERSION = "aa-spec-5"      # bump when the app-owned agent definition changes; old ones are rebuilt
 
 
 def agent_spec(semantic_view: str, title: str, sample_questions: list[str],
@@ -88,15 +88,18 @@ def agent_spec(semantic_view: str, title: str, sample_questions: list[str],
     if search_service:
         tools.append({"tool_spec": {"type": "cortex_search", "name": "documents",
                                     "description": "Company policies, operating standards, plan memos, weekly "
-                                                   "business review notes and the metric glossary. Use for why "
-                                                   "something happened, what a policy or target is, and what a "
-                                                   "metric means."}})
+                                                   "business review notes and the metric glossary. Use only for what "
+                                                   "a policy, target or metric definition says, or when a document "
+                                                   "clearly explains a movement already found in the data."}})
         resources["documents"] = {"search_service": search_service, "max_results": 4,
                                   "id_column": "DOC_ID", "title_column": "TITLE"}
-        orchestration = ("Use the analyst tool for numbers and the documents tool for reasons, policies, targets "
-                         "and definitions. For 'why' questions, first quantify with the analyst tool, then look "
-                         "for a documented cause with the documents tool, and say clearly which parts come from "
-                         "data and which from documents. Cite document IDs such as HLO-POL-014.")
+        orchestration = ("Answer from the governed data first, always with the analyst tool. For 'why' or 'what is "
+                         "driving' questions, explain the change from the data itself: break it down by the relevant "
+                         "dimensions (region, segment, product, channel, period) and name the biggest contributors. "
+                         "Use the documents tool only when the question asks what a policy, target or definition is, "
+                         "or when the data shows a movement and a document may explain its cause; documents are "
+                         "optional context, never required. If you use a document, say which parts come from it and "
+                         "cite its ID; do not mention documents you did not use.")
     if decision_proc:
         tools.append({"tool_spec": {
             "type": "generic", "name": "log_decision",
@@ -122,9 +125,10 @@ def agent_spec(semantic_view: str, title: str, sample_questions: list[str],
         "models": {"orchestration": "auto"},
         "instructions": {
             "orchestration": orchestration,
-            "response": (f"You are the governed analytics assistant for {title}. Be concise, name the metrics "
-                         "you used, cite documents by ID, and say when neither the data nor the documents can "
-                         "answer a question."),
+            "response": (f"You are the governed analytics assistant for {title}. Lead with what the data shows: "
+                         "the numbers, the change and its biggest contributors. Be concise, name the metrics you used"
+                         + (", cite a document by ID only when you used it," if search_service else ",")
+                         + " and say plainly when the data cannot answer a question."),
             "sample_questions": [{"question": q} for q in sample_questions[:4]],
         },
         "tools": tools,

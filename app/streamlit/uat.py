@@ -319,3 +319,19 @@ def inbox(entries: list[dict], owners: dict[str, dict], me: str, today: Optional
     return {"rows": rows, "closed_30d": closed,
             "badge_requests": sum(1 for r in rows if r["state"] == "rejected" and r["mine_owner"]),
             "badge_recheck": sum(1 for r in rows if r["state"] in ("fixed", "replied") and r["mine_reviewer"])}
+
+
+def attention(rows: list[dict]) -> list[dict]:
+    """Per dashboard: tiles I must fix (my dashboard, sent back) and fixes I must re-check (my request), with the
+    first tile to open. Replaces the old cross-dashboard Change requests / Waiting for my sign-off pages."""
+    out: dict[str, dict] = {}
+    for r in rows:
+        fix = r.get("state") == "rejected" and r.get("mine_owner")
+        chk = r.get("state") in ("fixed", "replied") and r.get("mine_reviewer")
+        if not (fix or chk):
+            continue
+        d = out.setdefault(r["dashboard_id"], {"dashboard_id": r["dashboard_id"], "name": r.get("dashboard_name") or "",
+                                               "to_fix": 0, "to_recheck": 0, "cid": r["cid"], "oldest_days": 0})
+        d["to_fix" if fix else "to_recheck"] += 1
+        d["oldest_days"] = max(d["oldest_days"], r.get("age_days") or 0)
+    return sorted(out.values(), key=lambda d: (-(d["to_fix"] + d["to_recheck"]), d["name"].lower()))

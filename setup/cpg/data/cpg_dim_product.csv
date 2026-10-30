@@ -1,0 +1,13 @@
+product_id,product_name,product_category,gender_segment,revenue_mix_pct,target_gross_margin_pct,seasonality_index,msrp_usd
+SKU-101,Performance Tees,Apparel,Mens,11.0,49.0,2.2,129.25
+SKU-102,Training Shorts,Apparel,Mens,9.0,47.0,2.6,77.28
+SKU-103,Compression Base Layer,Apparel,Mens,7.0,52.0,1.6,49.15
+SKU-104,Womens Leggings,Apparel,Womens,12.0,55.0,2.0,100.95
+SKU-105,Womens Sports Bra,Apparel,Womens,7.0,56.0,1.9,120.15
+SKU-106,Fleece Hoodies,Apparel,Unisex,10.0,45.0,3.4,108.2
+SKU-107,Running Shoes,Footwear,Unisex,13.0,41.0,1.8,72.39
+SKU-108,Training Shoes,Footwear,Unisex,8.0,40.0,1.7,33.09
+SKU-109,Team Uniforms,Apparel,Team,6.0,38.0,2.9,23.2
+SKU-110,Backpacks & Bags,Accessories,Unisex,6.0,44.0,2.3,51.4
+SKU-111,Caps & Headwear,Accessories,Unisex,5.0,51.0,1.5,67.88
+SKU-112,Socks Multipack,Accessories,Unisex,6.0,47.0,1.2,72.68

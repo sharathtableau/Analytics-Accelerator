@@ -95,6 +95,9 @@ class Result:
         return self.rows
 
 
+_SHARED_SETTINGS: list = []
+
+
 class FakeSession:
     def __init__(self, *, fail_top_insights=True, fail_forecast=False, agents=None):
         self.sqls = []
@@ -173,6 +176,8 @@ class FakeSession:
             return []
         if "SEMANTIC_VIEW(WBR_DB.ANALYTICS_ENTERPRISE.AA_" in up:
             return [{"CARRIER": "UPS", "FREIGHT_COST": 1234.5}, {"CARRIER": "USPS", "FREIGHT_COST": 987.0}]
+        if up.startswith("SHOW SEMANTIC DIMENSIONS") and " FOR METRIC " in up and _dom(up.split(" IN ", 1)[1].split()[0]):
+            return _dom(up.split(" IN ", 1)[1].split()[0]).dims_for(up.rsplit(" FOR METRIC ", 1)[1].strip().strip('"'))
         if up.startswith("SHOW SEMANTIC DIMENSIONS") and " FOR METRIC " in up:
             import os
             if os.environ.get("AA_FAKE_RESTRICT") != "1":
@@ -184,7 +189,18 @@ class FakeSession:
             if "WBR_DB.PUBLIC" in up:
                 return [{"name": "SUPERSTORE_DEMO_SV", "database_name": "WBR_DB", "schema_name": "PUBLIC",
                          "comment": "Superstore orders (demo)", "created_on": "2026-07-24"}]
+            import os
+            if os.environ.get("AA_FAKE_DOMAINS") == "1" and ("WBR_DB.FINANCE_DEMO" in up or "WBR_DB.CPG_DEMO" in up):
+                fin = "WBR_DB.FINANCE_DEMO" in up
+                return [{"name": "FINANCE_ANALYTICS_SV" if fin else "CPG_ANALYTICS_SV", "database_name": "WBR_DB",
+                         "schema_name": "FINANCE_DEMO" if fin else "CPG_DEMO",
+                         "comment": "Keystone Financial (demo)" if fin else "Apex Athletic (demo)", "created_on": "2026-10-22"}]
+            if "WBR_DB.FINANCE_DEMO" in up and os.environ.get("AA_FAKE_FINANCE") == "1":
+                return [{"name": "FINANCE_ANALYTICS_SV", "database_name": "WBR_DB", "schema_name": "FINANCE_DEMO",
+                         "comment": "Meridian Card Services (demo)", "created_on": "2026-10-22"}]
             return []
+        if up.startswith("DESCRIBE SEMANTIC VIEW") and _dom(s.split()[3]):
+            return _dom(s.split()[3]).describe()
         if up.startswith("DESCRIBE SEMANTIC VIEW"):
             out = [{"object_kind": "TABLE", "object_name": ENTITY, "parent_entity": None,
                     "property": "BASE_TABLE_NAME", "property_value": "ORDERS_SAMPLE_SUPERSTORE"}]
@@ -232,6 +248,19 @@ class FakeSession:
                 _t.sleep(float(os.environ["AA_FAKE_DELAY"]))
             if "Reply with the single word OK" in prompt:
                 return [{"R": "OK"}]
+            if "You prepare a one-page meeting brief" in prompt:
+                fl = [ln[2:] for ln in prompt.split("Facts:\n", 1)[1].split("\nRespond", 1)[0].split("\n") if ln.startswith("- ")]
+                fl = [re.sub(r"^\[[^\]]*\]\s*", "", f) for f in fl]
+                nums = []
+                for f in fl[:6]:
+                    m = re.search(r"-?[$]?[0-9][0-9,.]*[%KMB]?", f)
+                    if m:
+                        nums.append({"label": f.split(":")[0][:40], "value": m.group(0), "change": "vs prior period"})
+                return [{"R": json.dumps({"headline": fl[0][:200] if fl else "No change",
+                                          "numbers": nums[:4], "drivers": [fl[1][:180]] if len(fl) > 1 else [],
+                                          "risks": ["Revenue could fall 37.3% next quarter"],
+                                          "actions": ["Review the weakest segment with its owner this week"],
+                                          "questions": [{"q": "What moved most?", "a": fl[0][:180] if fl else ""}]})}]
             if "Pick the tables (1 to 6)" in prompt:
                 return [{"R": json.dumps({"tables": [{"fqn": "WBR_DB.PUBLIC.SHIPMENTS", "why": "freight cost per shipment"},
                                                      {"fqn": "WBR_DB.PUBLIC.CARRIERS", "why": "carrier type and SLA"},
@@ -256,6 +285,34 @@ class FakeSession:
                 return [{"R": json.dumps({"name": "PROFIT_PER_ORDER", "label": "Profit per Order",
                                           "formula": "ORDERS.PROFIT / ORDERS.ORDER_COUNT",
                                           "description": "Average profit earned on each order.", "theme": "Profitability"})}]
+            if "proposing dashboards for ONE person" in prompt:
+                label = prompt.split("Persona: ", 1)[1].split("\n", 1)[0]
+                view = re.search(r"- view: (\S+)", prompt).group(1)
+                lane_line = prompt.split("The persona's own metrics in this data: ", 1)[1].split("\n", 1)[0]
+                allm = [x.strip() for line in re.findall(r"^    [^:]+: (.+)$", prompt, re.M) for x in line.split(",")]
+                lane = [x.strip() for x in lane_line.split(",") if x.strip() and x.strip() != "any"] or allm
+                outside = next((x for x in allm if x not in lane), None)
+                nmov = len(re.findall(r"^  \d+\. ", prompt, re.M))
+                items = []
+                for i in range(6):
+                    mets = lane[i % len(lane):i % len(lane) + 2] or lane[:1]
+                    if i == 1 and outside:
+                        mets = mets[:1] + [outside]                 # one supporting metric: allowed
+                    items.append({"title": f"{label}: idea {i + 1} on {mets[0]}", "detail": "d", "theme": "theme",
+                                  "signal": (i + 1) if i < nmov else 0, "metrics": mets + ["Invented Metric"],
+                                  "semantic_view": view, "goal": f"{label}: look at {mets[0]}"})
+                if outside:
+                    out2 = [x for x in allm if x not in lane][:2]
+                    if len(out2) == 2:
+                        items.append({"title": "Out of lane", "metrics": out2, "semantic_view": view})   # dropped
+                items.append(dict(items[0]))                                   # duplicate: dropped
+                return [{"R": json.dumps({"ideas": items})}]
+            if "describes their role" in prompt:
+                allm = [x.strip() for line in re.findall(r"^    [^:]+: (.+)$", prompt, re.M) for x in line.split(",")]
+                return [{"R": json.dumps({"label": "Collections Manager", "owns": "Getting past-due balances back",
+                                          "decides": "Which segments to work first", "questions": ["Where is past-due growing?"],
+                                          "watches": ["DPD 30/60/90", "Recovery rate"], "metrics": allm[:3] + ["Made Up"],
+                                          "missing": ["Contact outcomes"], "audience": "managers"})}]
             if "dashboards for EACH audience" in prompt:
                 sv = "WBR_DB.PUBLIC.SUPERSTORE_DEMO_SV"
                 items = []
@@ -485,6 +542,14 @@ class FakeSession:
             return []
         if "AA_PUBLISHED" in up:
             pub = self.tables.setdefault("PUB", [])
+            import os
+            if not pub and os.environ.get("AA_FAKE_PORTAL_SEED") == "1":      # portal screenshots: 2 retail + 1 finance
+                for i, (n, sv, aud) in enumerate([("Weekly Sales Brief", "WBR_DB.PUBLIC.SUPERSTORE_DEMO_SV", "executives"),
+                                                  ("Store Operations", "WBR_DB.PUBLIC.SUPERSTORE_DEMO_SV", "daily_operations"),
+                                                  ("Card Portfolio Brief", "WBR_DB.FINANCE_DEMO.FINANCE_ANALYTICS_SV", "executives")]):
+                    pub.append({"DASHBOARD_ID": f"seed{i}", "VERSION": 1, "NAME": n, "SEMANTIC_VIEW": sv, "AUDIENCE": aud,
+                                "BINDINGS": "{}", "LAYOUT_SPEC": "{}", "VIEW_SETTINGS": "{}", "SHARED_ROLES": "[]",
+                                "SHARED_USERS": "[]", "NOTE": "", "PUBLISHED_BY": "SHARATH", "PUBLISHED_AT": "2026-10-20 09:00"})
             if up.startswith("SELECT COALESCE"):
                 return [{"V": max([r["VERSION"] for r in pub if r["DASHBOARD_ID"] == params[0]] or [0])}]
             if up.startswith("INSERT"):
@@ -611,7 +676,9 @@ class FakeSession:
                 hit = [r for r in ut if r["DASHBOARD_ID"] == params[0]]
             return hit[::-1]
         if "AA_APP_SETTINGS" in up:
-            st = self.tables.setdefault("SETTINGS", [])
+            import os
+            st = (_SHARED_SETTINGS if os.environ.get("AA_FAKE_SHARED_SETTINGS") == "1"     # persist across sessions
+                  else self.tables.setdefault("SETTINGS", []))
             if up.startswith("CREATE"):
                 return []
             if up.startswith("INSERT"):
@@ -677,6 +744,11 @@ class FakeSession:
 
     # ------------------------------------------------------------------------------------
     def _semantic(self, s):
+        if "UNION ALL" in s.upper() and "'(ALL)' AS SEG" in s.upper():        # unusual alert: total + segments
+            first, second = re.split(r"\s+UNION ALL\s+", re.sub(r"\s+ORDER BY PERIOD\s*$", "", s), maxsplit=1, flags=re.I)
+            total = [{"PERIOD": r["PERIOD"], "SEG": "(All)", "M0": r.get("M0")} for r in self._eval_sv(first)]
+            segs = [{"PERIOD": r["PERIOD"], "SEG": r.get("SEG"), "M0": r.get("M0")} for r in self._eval_sv(second)]
+            return sorted(total + segs, key=lambda r: str(r["PERIOD"]))
         if "UNION ALL" in s.upper():
             out = []
             for part in re.split(r"\s+UNION ALL\s+", s, flags=re.I):
@@ -731,6 +803,9 @@ class FakeSession:
 
     def _eval_sv(self, s):
         inner = s[s.upper().index("SEMANTIC_VIEW(") + len("SEMANTIC_VIEW("):]
+        dom = _dom(inner.strip().split()[0])
+        if dom:
+            return _eval_domain(dom, inner)
         dims_txt = re.search(r"DIMENSIONS (.+?)(?:\n\s*METRICS|\n\s*WHERE|\n\))", inner, re.S)
         mets_txt = re.search(r"METRICS (.+?)(?:\n\s*WHERE|\n\))", inner, re.S)
         where = re.search(r"WHERE (.+?)\n\)", inner, re.S)
@@ -775,6 +850,49 @@ class FakeSession:
                 row[alias] = v * skew[metric] if metric in skew and v is not None else v
             out.append(row)
         return out
+
+
+def _dom(fqn):
+    try:
+        import fake_domains
+    except ImportError:
+        return None
+    return fake_domains.get(fqn.strip().rstrip(",").replace('"', ""))
+
+
+def _eval_domain(dom, inner):
+    """The same SEMANTIC_VIEW(...) text, answered over a domain dataset (fake_domains)."""
+    dims_txt = re.search(r"DIMENSIONS (.+?)(?:\n\s*METRICS|\n\s*WHERE|\n\))", inner, re.S)
+    mets_txt = re.search(r"METRICS (.+?)(?:\n\s*WHERE|\n\))", inner, re.S)
+    where = re.search(r"WHERE (.+?)\n\)", inner, re.S)
+    dims = []
+    if dims_txt:
+        for part in re.split(r",\s*(?![^()]*\))", dims_txt.group(1)):
+            part = part.strip()
+            m = re.match(r"DATE_TRUNC\('(\w+)', \w+\.(\w+)\) AS (\w+)", part)
+            if m:
+                dims.append((m.group(3), m.group(2).upper(), m.group(1)))
+            else:
+                m = re.match(r"\w+\.(\w+) AS (\w+)", part)
+                dims.append((m.group(2), m.group(1).upper(), None))
+    mets = []
+    if mets_txt:
+        for part in mets_txt.group(1).split(","):
+            m = re.match(r"\s*\w+\.(\w+) AS (\w+)", part)
+            mets.append((m.group(2), m.group(1).upper()))
+    conds = []
+    if where:
+        w = where.group(1)
+        dates = re.findall(r"\w+\.(\w+) >= TO_DATE\('([0-9-]+)'\)", w)
+        ends = re.findall(r"\w+\.(\w+) < TO_DATE\('([0-9-]+)'\)", w)
+        for col, v in dates:
+            conds.append(lambda r, c=col.upper(), v=dt.date.fromisoformat(v): r[c] >= v)
+        for col, v in ends:
+            conds.append(lambda r, c=col.upper(), v=dt.date.fromisoformat(v): r[c] < v)
+        for col, vals in re.findall(r"\w+\.(\w+) IN \(([^)]*)\)", w):
+            allowed = {v.strip().strip("'").replace("''", "'") for v in vals.split(",")}
+            conds.append(lambda r, c=col.upper(), a=allowed: c in r and str(r[c]) in a)
+    return dom.query(dims, mets, lambda r: all(c(r) for c in conds))
 
 
 # ---- independent base-table queries (validation QA-01/QA-05) ------------------------------------------------------

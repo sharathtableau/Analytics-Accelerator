@@ -210,12 +210,21 @@ def _pnl(d, fmt):
     return out
 
 
+def _finding(fallback=None):
+    """Tiles that write their own finding from their numbers (domain_tiles.py, and options on scatter/heatmap)."""
+    def fn(d, fmt):
+        return d.get("finding") or (fallback(d, fmt) if fallback else "")
+    return fn
+
+
 RULES: dict[str, Callable] = {
     "trend_chart": _trend, "forecast_band": _forecast,
     "ranked_bar": _ranked, "target_bar": _ranked, "capacity_chart": _ranked,
     "period_compare": _compare, "share_donut": _donut, "pareto": _pareto, "driver_bridge": _bridge,
-    "segment_matrix": _matrix, "heatmap": _matrix,
+    "segment_matrix": _finding(_matrix), "heatmap": _finding(_matrix),
     "exception_table": _exceptions, "exception_queue": _exceptions, "risk_table": _exceptions,
-    "scatter": _scatter,
+    "scatter": _finding(_scatter),
+    "outlier_lines": _finding(), "change_bars": _finding(), "driver_split": _finding(), "velocity_split": _finding(),
+"stacked_trend": _finding(), "metric_waterfall": _finding(),
     "combo_chart": _combo, "treemap": _treemap, "gauge": _gauge, "pnl_table": _pnl,
 }

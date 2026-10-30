@@ -1,5 +1,7 @@
 # Visuals plan: enterprise dashboards at Claude-level design quality
 
+> **Status: PARKED since 21 Oct 2026** for multi-domain work. Resume from VX0 when Sharath unparks it; baseline git tag `pre-visuals-2026-10-21`. Already delivered meanwhile: analysis tiles ("chart drop B" for domains, 22 Oct).
+
 Agreed with Sharath on 16 Oct 2026. Status of each phase is in `ENTERPRISE_TRACKER.md`, section R (rows VX0–VX4).
 
 ## Goal

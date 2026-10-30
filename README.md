@@ -2,7 +2,7 @@
 
 A Snowflake-native dashboard builder: business users describe what they need in plain English, Cortex designs the dashboard from governed data, every number is checked automatically against the source tables, and the result is published to viewers in a read-only portal. Everything runs inside Snowflake: no data leaves the account, and no external BI tool is involved.
 
-Owner: Sharath (Blend360) · Built with Claude · README updated 16 Oct 2026 · "Analytics Accelerator" is a working name.
+Owner: Sharath (Blend360) · Built with Claude · README updated 27 Oct 2026 · "Analytics Accelerator" is a working name.
 
 ---
 
@@ -10,19 +10,22 @@ Owner: Sharath (Blend360) · Built with Claude · README updated 16 Oct 2026 · 
 
 | Step | What the user does | What happens inside Snowflake |
 |---|---|---|
-| **Ask** | Types a goal on Home ("Board pack on revenue and margin vs last year, by region") and picks an audience: Executive, Manager or Operations | Cortex `AI_COMPLETE` routes the request to the right semantic view and proposes dashboard ideas per audience |
+| **Ask** | Types a goal on Home ("Board pack on revenue and margin vs last year, by region") and picks a persona of the workspace (e.g. Chief Credit Officer, Revenue Growth Manager, Category Manager) or Leadership | Cortex `AI_COMPLETE` routes the request to the right semantic view and proposes dashboard ideas for that persona |
 | **Review** | Approves the recommended metrics (definition and formula shown from the semantic view) and an editable outline of pages and tiles | Cortex only proposes. A validator accepts only real fields, valid metric × dimension pairs and known chart types |
 | **Build** | Gets a multi-page dashboard: KPIs, trends, breakdowns, forecasts, drivers, exceptions, a live operations view | Every number comes from a `SEMANTIC_VIEW()` query. Forecasts, drivers and anomalies come from Snowflake ML functions |
-| **Validate** | Sees a pill on every tile: Verified, Review, Mismatch or Not checked. Opens the evidence | Each number is re-derived independently from the base tables and compared (section 4) |
+| **Validate** | Opens the Validation tab and runs the check on demand; every tile gets Verified, Review, Mismatch or Not checked, with evidence. Business reviewers sign off in the app | Each number is re-derived independently from the base tables and compared (section 4) |
 | **Style** | Dashboards use the company theme (Classic until one is set) | Brand colours from a form, a design-token file or the logo, checked for WCAG contrast before saving (`themes.py`) |
 | **Refine** | Edits tiles, pages and filters directly or in plain English; asks questions per tile | Edits go through the same validator. Questions go to a Cortex Agent (Cortex Analyst + Cortex Search) |
-| **Publish** | Publishes a version to Snowflake roles or named users | Viewers get the **Analytics Accelerator Portal**: read-only, no builder controls, the same governed data |
+| **Alert** | Asks in plain English for an email when a metric crosses a line | A task runs the saved check on schedule and emails through a notification integration |
+| **Publish** | Publishes a version to Snowflake roles or named users (needs a fresh validation) | Viewers get the **Analytics Accelerator Portal**: read-only, no builder controls, the same governed data |
 
 **No semantic view yet?** The app can create one. A user describes a business question, Cortex picks candidate tables from metadata only, and the app drafts a single- or multi-table semantic view (2–8 tables) for the user to review. Join keys are checked for uniqueness and totals are reconciled before `CREATE SEMANTIC VIEW`.
 
 **Custom metrics.** Users define metrics as a formula over governed metrics, or in plain English. The grammar is strict, the SQL is built from a parsed tree, and Cortex output is never executed as written.
 
 ## 2. Architecture
+
+Full component view and connections: `ARCHITECTURE.md` and the slide `Downloads\Analytics Accelerator Partner Demo\Analytics_Accelerator_Architecture.pptx`.
 
 ```
 Snowsight
@@ -38,6 +41,9 @@ Snowsight
    ├─ chart_tiles / headlines              bars + line, treemap, gauge, P&L table; rule-written tile headlines
    ├─ validation                           automatic QA of every tile against base tables
    ├─ themes                               company themes: brand inputs -> checked colour tokens
+   ├─ domains / domain_packs / domain_tiles  workspaces (Retail, Finance, CPG), personas, layout packs, analysis tiles
+   ├─ home                                 catalog, ideas per persona, prompt routing
+   ├─ uat / alerts / alerts_core           business sign-off; data alerts (task + procedure + email)
    ├─ ai_services / agent_service          AI_COMPLETE, AI_AGG, ML functions, Cortex Agents
    └─ store                                app tables in WBR_DB.ANALYTICS_ENTERPRISE
 ```
@@ -56,13 +62,13 @@ Snowsight
 | Cortex AI | `AI_COMPLETE` (constrained and validated), `AI_AGG` (page summaries from governed facts), `AI_PARSE_DOCUMENT` and chunking for documents |
 | Cortex Agents | Cortex Analyst on the same semantic view, Cortex Search over policy documents, a custom stored-procedure tool that logs decisions, agents auto-created per view |
 | Snowflake ML | `FORECAST`, `TOP_INSIGHTS` (key drivers), `ANOMALY_DETECTION` (exceptions) |
-| Platform | Streamlit in Snowflake (container runtime), query tags per feature for cost attribution, `ACCOUNT_USAGE` for the Cortex usage panel |
+| Platform | Streamlit in Snowflake (container runtime), tasks + stored procedures (alerts), `SYSTEM$SEND_EMAIL` with a notification integration, query tags per feature for cost attribution, `ACCOUNT_USAGE` for the Cortex usage panel |
 
-The full map, including deliberate non-uses, is in `CAPABILITY_MAP.md`. That file was last updated 1 Oct.
+The full map, including deliberate non-uses, is in `CAPABILITY_MAP.md` (updated 23 Oct).
 
 ## 4. Trust: automatic validation (QA)
 
-Every data tile is validated automatically after a build, an edit, a filter change or a refresh. Validation warns only and blocks nothing.
+Validation runs on demand from the Validation tab (since 21 Oct). Nothing is checked while building. Publishing requires a fresh validation (after the last change, same data-through date, every page); mismatches do not block but need a sign-off reason.
 
 | Check | What it proves |
 |---|---|
@@ -95,12 +101,16 @@ Every data tile is validated automatically after a build, an edit, a filter chan
 |---|---|
 | `app\streamlit\` | The app: Python modules, `app_bundle.js` (the React UI; the deployed bundle is the source of truth), `app_styles.css`, `snowflake.yml` (both apps), `config.py` (schemas, models, limits) |
 | `app\tests\` | Unit tests against `fake_snowflake.py`, an in-memory stand-in for Snowflake. No account needed |
-| `setup\` | Schema creation, the agent tool, agent evaluation, cost snapshot, admin guardrails, and the Harborline retail demo data (`setup\retail\`) |
+| `setup\` | Schema creation, the agent tool, agent evaluation, cost snapshot, admin guardrails, alert email integration, and demo data: Harborline retail (`setup\retail\`), Keystone Financial (`setup\finance\`), Apex Athletic (`setup\cpg\`) |
 | `gateway_probe\` | Test-only app that checks whether Streamlit in Snowflake can call the Cortex AI Gateway |
 | `deploy_enterprise.cmd`, `deploy_portal.cmd` | Run the tests, then deploy each app with the Snowflake CLI (connection `wbr`) |
 | `ENTERPRISE_TRACKER.md` | Roadmap (section R) and change log. Updated with every change |
 | `ENTERPRISE_PLAN.md`, `CAPABILITY_MAP.md`, `DEMO_SCRIPT.md` | Original plan, feature map and demo script (written for the October demo) |
-| `VISUALS_PLAN.md` | Visuals program: design system v3 and Cortex Design Studio (agreed 16 Oct) |
+| `MULTI_DOMAIN_PLAN.md` | Multi-domain plan: Retail, Finance, CPG workspaces, personas, analysis tiles, persona ideas v2 plan (current priority) |
+| `ARCHITECTURE.md` | Component architecture and connections (23 Oct) |
+| `NEW_SESSION_PROMPT.md` | Prompt to start a new Claude session on this project |
+| `DEMO_FAQ.md` | Answers to demo questions: how ideas are generated, training, agents per domain |
+| `VISUALS_PLAN.md` | Visuals program: design system v3 and Cortex Design Studio (agreed 16 Oct, parked 21 Oct) |
 | `SCENARIO_18_*.md`, `SCENARIO_19_*.md` | Test steps for the live account |
 
 An install package for other Snowflake accounts, driven by `settings.ini`, is kept separately in `Downloads\Analytics_Accelerator_Install`.
@@ -120,7 +130,7 @@ Run the tests only:
 ```
 cd /d "C:\Users\SharathKumarKammari\Downloads\snowflake-react-app-runtime\Analytics_Accelerator_Enterprise_Claude\app" && python -m unittest discover -s tests -p "test_*.py"
 ```
-Latest result: 214 tests pass.
+Latest result: 289 tests pass (27 Oct), in the project and the install package.
 
 **Required privileges for the app role:**
 - USAGE on the allowlisted schemas and their semantic views.
@@ -139,7 +149,10 @@ Latest result: 214 tests pass.
   - UI restyle with visible progress.
   - Automatic validation, with a Validation tab, diagnosis and resolutions.
   - Insight headlines, company themes and four new chart types (15–16 Oct).
-- Most post-demo work has been verified locally only, with fake Snowflake and browser tests. The live test steps are Scenarios 13–19.
+  - In-app business sign-off, validation on demand + publish gate, data alerts by email (16–21 Oct; first live email 21 Oct).
+  - Workspaces: Retail, Finance, CPG with live data, domain layout packs, suggested alerts, analysis tiles, domain personas and persona ideas on Home (21–22 Oct).
+  - Persona ideas v2: Cortex writes ideas at run time from the persona, its guidance and what moved in the data ("Why this idea"); '+ Your role' drafts a persona for any role; navigation keeps your work (continue card, back to Review, unsaved prompt) (23–27 Oct). All deployed 27 Oct.
+- Most post-demo work has been verified locally only, with fake Snowflake and browser tests. The live test steps are Scenarios 13–21; the 22 Oct domain work still needs a deploy and walkthrough.
 
 **Known limits.**
 - Validation shows "Not checked" for derived metrics that mix tables at different grains, and for window-function metrics.
@@ -148,24 +161,17 @@ Latest result: 214 tests pass.
 - Composite join keys are not detected automatically.
 - Per-viewer row filtering is not built yet. The apps run with owner's rights.
 
-## 9. Roadmap (priority order)
+## 9. Roadmap (priority order, 27 Oct, after the Clarity meeting)
 
-1. **Validation, drop 2 (UAT).** A requirement trace per tile, auto-generated UAT test cases exported as an Excel workbook, and reviewer sign-off per section.
-2. **Visuals program** (agreed 16 Oct; plan in `VISUALS_PLAN.md`). Goal: dashboards at Claude-level design quality or better, with every number still governed and validated.
-   - **VX0, probe:** which Claude models Cortex can reach, cost per page design, sandbox frame in Snowsight, image input.
-   - **VX1, design system v3:** page compositions, annotation layer, emphasis rules, chart drop B, interaction.
-   - **VX2, Cortex art director:** Opus design spec, Design QA score and critique loop.
-   - **VX3, generated components:** sandbox, rendered-number check QA-09, versioned component library.
-   - **VX4, export and accessibility:** PDF / PowerPoint board pack, table alternatives, colour-blind palettes, device layouts.
-3. **Access control, admin-free.** Groups, per-dashboard access, and row rules applied by the app.
-4. Dev / test / prod environments.
-5. Audit trail and a Governance view.
-6. Monitoring.
-7. Security review.
-8. Publish approval.
-9. Alerts.
-10. Load test.
-11. Cortex AI Gateway, if the probe passes.
-12. Source control.
+Built 27 Oct: anomaly alerts, click a value to ask, data-first agent, Review "+ Add or remove metrics" on every layout.
 
-Full status of each item is in `ENTERPRISE_TRACKER.md`, section R.
+1. **Set me up + weekly digest:** an interview ("who are you, what do you do") that builds a persona workspace, 3–5 dashboards and alerts, then emails what changed and why. Adds "Build it for me" (Review stays).
+2. **Trust:** certified metrics, tie-out against a reference number (e.g. finance's figure), semantic view change detection.
+3. **"What else is going on":** drivers of a change + outside context from Marketplace data, in the digest (scope first).
+4. **One-month starter offer:** install with configurable domains + pilot playbook.
+5. **Cross-source matching** of campaign / customer IDs (when a Marketing domain is approved; scope first).
+6. Access control (admin-free, BI-tool style; PRIORITY, plan in `ACCESS_CONTROL_PLAN.md`), dev / test / prod, audit trail + publish approval, security review, monitoring, load test.
+7. Domain polish (DEV version): validation checks from the ontology gotchas, agent evaluations for Finance and CPG.
+8. Later: Cortex AI Gateway, Snowflake Intelligence agent, Native App / Marketplace. **Parked:** visuals program (`VISUALS_PLAN.md`).
+
+Demo questions (how ideas are made, training, agents): `DEMO_FAQ.md`. Full status: `ENTERPRISE_TRACKER.md`, section R.

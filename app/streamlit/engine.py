@@ -10,6 +10,7 @@ import datetime as dt
 import json
 import math
 import re
+from statistics import median
 import statistics
 import time
 from typing import Any, Callable, Optional
@@ -18,11 +19,13 @@ from inventory import Bindings, Profile, SOURCE_BASELINE
 from headlines import headline as tile_headline
 from chart_tiles import ChartTiles
 from persona_tiles import PersonaTiles
+from domain_tiles import DomainTiles
 from semantic_catalog import SemanticModel
 from semantic_query import SemanticQuery, capturing, shift
 
-CURRENCY = re.compile(r"SALES|REVENUE|PROFIT|AMOUNT|COST|PRICE|SPEND|GMV|VALUE|MARGIN|USD", re.I)   # a ratio MARGIN is caught by PERCENT first
-PERCENT = re.compile(r"RATIO|RATE|PCT|PERCENT|MARGIN$|SHARE|DISCOUNT", re.I)
+CURRENCY = re.compile(r"SALES|REVENUE|PROFIT|AMOUNT|COST|PRICE|SPEND|GMV|VALUE|MARGIN|USD|BALANCE|VOLUME|INCOME|EXPENSE|"
+                      r"CHARGE_?OFF|RECOVER|FUNDS|MONEY|RUNOFF|MATURING|DOLLARS|INTERCHANGE|CREDIT_LINE", re.I)   # a ratio MARGIN is caught by PERCENT first
+PERCENT = re.compile(r"RATIO|RATE|PCT|PERCENT|MARGIN$|SHARE|DISCOUNT|YIELD|_MIX$|_ROI$|_LIFT$", re.I)
 HORIZON = {"day": 14, "week": 8, "month": 6, "quarter": 4}
 
 
@@ -51,7 +54,9 @@ def fmt(v: Optional[float], kind: str = "number") -> str:
             break
     else:
         s = f"{v:,.0f}" if a >= 100 or float(v).is_integer() else f"{v:,.2f}"
-    return ("$" + s) if kind == "currency" else s
+    if kind == "currency":
+        return ("-$" + s[1:]) if s.startswith("-") else ("$" + s)
+    return s
 
 
 def pct(cur: Optional[float], base: Optional[float]) -> Optional[float]:
@@ -64,7 +69,7 @@ class Deferred(Exception):
     """Component waits for a slower Snowflake ML step (filled in by a second pass)."""
 
 
-class Engine(ChartTiles, PersonaTiles):
+class Engine(ChartTiles, PersonaTiles, DomainTiles):
     def __init__(self, session, model: SemanticModel, b: Bindings, profile: Profile,
                  cortex=None, store=None, cache: Optional[dict] = None, log: Optional[list] = None,
                  defer_ml: bool = False, opts: Optional[dict] = None):
@@ -354,8 +359,9 @@ class Engine(ChartTiles, PersonaTiles):
                  + "; ".join(f"{r['segment']} {fmt(r['current'], kind)}"
                              + (f" ({r['change'] * 100:+.1f}% vs prior)" if r['change'] is not None else "")
                              for r in rows[:6])]
+        ref = self._ref(comp)
         return {"metric": m, "metric_label": self.mlabel(m), "dimension_label": self.dlabel(dim), "kind": kind,
-                "rows": rows, "current_label": self.cal.label(self.cal.current_start),
+                "reference": ref, "rows": rows, "current_label": self.cal.label(self.cal.current_start),
                 "prior_label": self.cal.label(self.cal.prior_start), "_facts": facts}
 
     target_bar = ranked_bar
@@ -534,6 +540,9 @@ class Engine(ChartTiles, PersonaTiles):
         d2 = comp.get("dimension2") or self.b.region_dimension
         if not d2:
             raise RuntimeError("Needs a second dimension")
+        o = comp.get("opts") or {}
+        if o:
+            return self._matrix_opts(comp, m, d1, d2, o)
         rows = self._memo_get(f"matrix:{m}:{d1}:{d2}", lambda: self._by_dim(
             [m], [d1, d2], self.cal.current_start, shift(self.cal.current_start, self.cal.grain, 1), limit=900))
         kind = self.kind_of(m)
@@ -545,6 +554,55 @@ class Engine(ChartTiles, PersonaTiles):
                  f"{fmt(best[m], kind)}"] if best else []
         return {"metric_label": self.mlabel(m), "kind": kind, "row_label": self.dlabel(d1), "col_label": self.dlabel(d2),
                 "rows": rws, "cols": cols, "values": [[cells.get((r, c)) for c in cols] for r in rws], "_facts": facts}
+
+    def _matrix_opts(self, comp, m, d1, d2, o) -> dict[str, Any]:
+        """Heatmap over a whole window (13 weeks), optionally as change vs last year, coloured around a centre
+        (a number, or the median cell) or against a healthy band; only out-of-line cells are labelled."""
+        from domain_tiles import _chg_txt, _val
+        kind = self.kind_of(m)
+        change = o.get("mode") == "change"
+        if change:
+            cur, base, cur_label, base_label = self._compare(comp, [m], [d1, d2])
+            cells = {k: self._delta(r.get(m), (base.get(k) or {}).get(m), kind) for k, r in cur.items()}
+            ckind = "change_pts" if kind == "percent" else "change_pct"
+        else:
+            w = self._windows(comp)
+            rows = self._win_rows([m], [d1, d2], w["cur"], self._tile_where(comp, [m]))
+            cells = {(r[d1], r[d2]): r.get(m) for r in rows}
+            cur_label, base_label, ckind = w["label"], None, kind
+        vals = [v for v in cells.values() if v is not None]
+        if not vals:
+            raise RuntimeError("No data for this matrix")
+        band = o.get("band")
+        centre = o.get("center")
+        centre = (median(vals) if centre == "median" else float(centre)) if centre is not None else (0.0 if change else None)
+        down = self._better_down(comp, m)
+        cols = sorted({k[1] for k in cells})[:14]
+        rws = sorted({k[0] for k in cells})[:15]
+
+        def off(v):
+            if v is None:
+                return 0.0
+            if band:
+                lo, hi = float(band[0]), float(band[1])
+                return (v - hi) if v > hi else (v - lo) if v < lo else 0.0
+            return v - centre if centre is not None else 0.0
+        spread = max((abs(off(v)) for v in vals), default=0) or 1.0
+        worst = max(cells.items(), key=lambda kv: (off(kv[1]) * (1 if down else -1)) if kv[1] is not None else -1e30)
+        show = lambda v: _chg_txt(v, kind) if change else _val(fmt, v, kind)
+        if band:
+            out_n = sum(1 for v in vals if off(v) != 0)
+            finding = (f"{out_n} of {len(vals)} cells outside {_val(fmt, float(band[0]), kind)}–{_val(fmt, float(band[1]), kind)}; worst "
+                       f"{worst[0][0]} × {worst[0][1]} at {show(worst[1])}")
+        else:
+            finding = f"{worst[0][0]} × {worst[0][1]} stands out at {show(worst[1])}" + (
+                f" (typical {show(centre)})" if centre is not None and not change else f" vs {base_label}" if change else "")
+        return {"metric_label": self.mlabel(m), "kind": kind, "row_label": self.dlabel(d1), "col_label": self.dlabel(d2),
+                "rows": rws, "cols": cols, "values": [[cells.get((r, c)) for c in cols] for r in rws],
+                "diverge": {"centre": centre, "band": band, "spread": spread, "better": "down" if down else "up",
+                            "mode": "change" if change else "level", "label": o.get("label") or "outliers"},
+                "period_label": cur_label + (f" vs {base_label}" if change else ""),
+                "filter_note": self._filter_note(comp), "finding": finding, "_facts": [finding]}
 
     detail_table = evidence_table
     heatmap = segment_matrix
@@ -601,17 +659,38 @@ class Engine(ChartTiles, PersonaTiles):
         m2 = comp.get("metric2_id")
         if not m2:
             raise RuntimeError("Scatter needs a second metric")
-        rows = [r for r in self.window_by_dim([m, m2], [dim]) if r.get(m) is not None and r.get(m2) is not None]
-        pts = [{"label": r[dim], "x": r[m], "y": r[m2]} for r in rows[:150]]
+        o = comp.get("opts") or {}
+        periods = int(o.get("periods") or 12)
+        d2 = comp.get("dimension2") if comp.get("dimension2") and comp.get("dimension2") != dim else None
+        dims = [dim] + ([d2] if d2 else [])
+        rows = [r for r in self.window_by_dim([m, m2], dims, periods) if r.get(m) is not None and r.get(m2) is not None]
+        pts = [{"label": r[dim], "x": r[m], "y": r[m2], **({"group": r[d2]} if d2 else {})} for r in rows[:200]]
         kx, ky = self.kind_of(m), self.kind_of(m2)
         facts = []
+        ref_y = o.get("reference_y")
+        if ref_y is not None and pts:
+            try:
+                ry = float(ref_y)
+                below = [p for p in pts if p["y"] < ry]
+                ref = {"value": ry, "label": str(o.get("reference_label") or "")[:40]}
+                spent = sum(p["x"] for p in below)
+                noun = o.get("noun") or f"{self.dlabel(dim).lower()} values"
+                finding = (f"{len(below)} of {len(pts)} {noun} below {ref['label'] or fmt(ry, ky)}"
+                           + (f" ({fmt(spent, kx)} of {self.mlabel(m).lower()})" if below and kx == "currency" else ""))
+            except (TypeError, ValueError):
+                ref, finding = None, ""
+        else:
+            ref, finding = None, ""
         if len(pts) >= 3:
             low = min(pts, key=lambda p: p["y"])
             facts.append(f"Across {len(pts)} {self.dlabel(dim)} values ({self.window_label()}), lowest "
                          f"{self.mlabel(m2)} is {low['label']} ({fmt(low['y'], ky)}) at "
                          f"{self.mlabel(m)} {fmt(low['x'], kx)}")
+        if finding:
+            facts.append(finding)
         return {"x_label": self.mlabel(m), "y_label": self.mlabel(m2), "x_kind": kx, "y_kind": ky,
-                "dimension_label": self.dlabel(dim), "points": pts, "period_label": self.window_label(),
+                "dimension_label": self.dlabel(dim), "points": pts, "period_label": self.window_label(periods),
+                "group_label": self.dlabel(d2) if d2 else None, "reference_y": ref, "finding": finding,
                 "_facts": facts}
 
     # -- orchestration ---------------------------------------------------------------------
@@ -638,7 +717,7 @@ class Engine(ChartTiles, PersonaTiles):
                     elif c["type"] == "pareto":
                         d = self._segment_dim(c)
                         jobs[f"win:{m}:{d}"] = (lambda m=m, d=d: self.window_by_dim([m], [d]))
-                    elif c["type"] == "scatter" and c.get("metric2_id"):
+                    elif c["type"] == "scatter" and c.get("metric2_id") and not c.get("opts") and not c.get("dimension2"):
                         d, m2 = self._segment_dim(c), c["metric2_id"]
                         jobs[f"win:{m}:{m2}:{d}"] = (lambda m=m, m2=m2, d=d: self.window_by_dim([m, m2], [d]))
                 except Exception:

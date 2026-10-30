@@ -248,6 +248,8 @@ class SemanticQuery:
         lo, hi = _date(row.get("min_d")), _date(row.get("max_d"))
         if not lo or not hi:
             raise ValueError("The time dimension has no dates")
+        if grain == "day" and self.is_weekly(time, metric, hi):
+            grain = "week"              # weekly data (one date per week): a daily view would be one point a week
         start = period_start(hi, grain)
         next_start = shift(start, grain, 1)
         complete = (hi + dt.timedelta(days=1)) >= next_start
@@ -256,6 +258,20 @@ class SemanticQuery:
         span = WINDOW[grain] if grain == "day" else max(WINDOW[grain], periods_per_year(grain) + 1)
         window_start = max(period_start(lo, grain), shift(current, grain, -(span - 1)))
         return Calendar(lo, hi, grain, current, window_start, end_excl)
+
+    def is_weekly(self, time, metric, hi: dt.date) -> bool:
+        """True when the data has at most one date per week (e.g. weekly snapshots dated by week ending)."""
+        cache = self.__dict__.setdefault("_weekly", {})
+        if time.ref not in cache:
+            try:
+                sql = (f"SELECT DISTINCT D FROM "
+                       + self.sv([self.trunc(time, "day", "D")], [f"{metric.ref} AS V"],
+                                 self.range_where(time, hi - dt.timedelta(days=55), hi + dt.timedelta(days=1))))
+                days = {d for d in (_date(r.get("d")) for r in self.run(sql)) if d}
+                cache[time.ref] = len(days) >= 3 and len({d.weekday() for d in days}) == 1   # every date on one weekday
+            except Exception:
+                cache[time.ref] = False
+        return cache[time.ref]
 
     def distinct_counts(self, dim_ids: Sequence[str]) -> dict[str, int]:
         if not dim_ids:

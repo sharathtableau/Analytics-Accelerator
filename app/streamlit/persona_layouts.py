@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 from composer import DataContext, Governance, validate_layout
 from engine import fmt_kind
+import domain_packs
 
 PERSONAS = ("executives", "managers", "daily_operations")
 # plan targets and helpers, and variance metrics such as NET_SALES_VS_PLAN (actual - plan): the tiles compute the
@@ -78,8 +79,29 @@ VARIANT_RULES = {
 }
 
 
-def variant_ids(persona: str) -> list[str]:
-    return [v["id"] for v in VARIANTS.get(persona, [])]
+def variant_ids(persona: str, ctx: Optional[DataContext] = None) -> list[str]:
+    return [v["id"] for v in all_variants(persona, ctx)]
+
+
+def all_variants(persona: str, ctx: Optional[DataContext] = None) -> list[dict[str, Any]]:
+    """The domain pack's layouts first (in a domain workspace), then the generic layouts of the audience."""
+    pack = domain_packs.variants(getattr(ctx, "domain", "") if ctx else "", persona)
+    pack = [v for v in pack if domain_packs.resolve(ctx, v)["pages"]]      # only layouts this view can fill
+    if domain_packs.extra(getattr(ctx, "domain", "") if ctx else ""):
+        return list(VARIANTS.get(persona, [])) + pack
+    return pack + list(VARIANTS.get(persona, []))
+
+
+def pick_variant(persona: str, goal: str, ctx: Optional[DataContext] = None, focus: Optional[dict] = None) -> str:
+    dom = getattr(ctx, "domain", "") if ctx else ""
+    pack = [v for v in all_variants(persona, ctx) if domain_packs.get(dom, persona, v["id"])]
+    hit = domain_packs.rule(dom, persona, goal)
+    if hit and any(v["id"] == hit for v in pack):
+        return hit
+    generic = rule_variant(persona, goal)
+    if pack and not domain_packs.extra(dom) and not (generic == "question" and (focus or {}).get("dimension")):
+        return pack[0]["id"]                     # a domain workspace opens on its own reviewed layout
+    return generic
 
 
 def rule_variant(persona: str, goal: str) -> str:
@@ -237,7 +259,7 @@ def slot_prompt(ctx: DataContext, persona: str, goal: str, slots: dict[str, dict
         f"Semantic view: {ctx.model.fqn}. {ctx.model.comment or ''}\n"
         "Slots (use ONLY ids from each slot's options, exactly as written):\n" + "\n".join(lines) + "\n"
         "Layouts for this audience (pick the one that fits the user goal best):\n"
-        + "\n".join(f"- {v['id']}: {v['title']} - use for {v['when']}" for v in VARIANTS[persona]) + "\n"
+        + "\n".join(f"- {v['id']}: {v['title']} - use for {v['when']}" for v in all_variants(persona, ctx)) + "\n"
         "Focus: only if the person's own words (or the goal, when no own words are given) name a specific metric "
         "and/or breakdown (e.g. 'returns by channel'), give their ids "
         "(metric from any metric slot's options, dimension from any dimension slot's options), else null.\n"
@@ -272,7 +294,7 @@ def fill_slots(cortex, ctx: DataContext, persona: str, goal: str,
                         chosen[k] += [x for x in sl["default"] if x not in chosen[k]][: sl["n"] - len(chosen[k])]
             info = {"origin": "cortex", "title": str(raw.get("title") or "")[:60] or None,
                     "summary": str(raw.get("summary") or "")[:240] or None, "provenance": prov}
-            if raw.get("layout") in variant_ids(persona):
+            if raw.get("layout") in variant_ids(persona, ctx):
                 info["layout"] = raw["layout"]
             fo = raw.get("focus") if isinstance(raw.get("focus"), dict) else {}
             metrics_ok = {m.id for m in ctx.model.metrics}
@@ -478,7 +500,8 @@ def variant_skeleton(ctx: DataContext, persona: str, s: dict[str, list[str]], va
 
 def build_layout(ctx: DataContext, persona: str, chosen: dict, variant: str, focus: dict, goal: str,
                  gov: Optional[Governance] = None) -> list[dict[str, Any]]:
-    raw = variant_skeleton(ctx, persona, chosen, variant, focus)
+    pack = domain_packs.get(getattr(ctx, "domain", ""), persona, variant)
+    raw = domain_packs.resolve(ctx, pack) if pack else variant_skeleton(ctx, persona, chosen, variant, focus)
     lead = focus_tile(ctx, focus, goal, chosen) if variant != "question" else None
     if lead and lead["type"] == "trend_chart":              # the layout already has a trend chart: no second one on top
         same = next((t for t in raw["pages"][0]["tiles"] if t.get("type") == "trend_chart"), None)
@@ -504,7 +527,7 @@ def build_layout(ctx: DataContext, persona: str, chosen: dict, variant: str, foc
 def layout_options(ctx: DataContext, persona: str, chosen: dict, focus: dict, goal: str) -> list[dict[str, Any]]:
     """Every layout of this audience, filled with the same slots: for the switcher's thumbnails."""
     out = []
-    for v in VARIANTS[persona]:
+    for v in all_variants(persona, ctx):
         try:
             pages = build_layout(ctx, persona, chosen, v["id"], focus, goal)
         except Exception:
@@ -564,18 +587,26 @@ def compose_persona(cortex, ctx: DataContext, goal: str, variant: Optional[str] 
         gov.entries.extend(notes)
         tf = text_focus(ctx, asked or goal)
         focus = {k: (info.get("focus") or {}).get(k) or tf.get(k) for k in ("metric", "dimension")}
-    if variant not in variant_ids(persona):
-        variant = info.get("layout") or rule_variant(persona, asked or goal)
+    if variant not in variant_ids(persona, ctx):
+        pack_ids = [v["id"] for v in all_variants(persona, ctx) if domain_packs.get(getattr(ctx, "domain", ""), persona, v["id"])]
+        ruled = domain_packs.rule(getattr(ctx, "domain", ""), persona, asked or goal)
+        ruled = ruled if ruled in pack_ids else None
+        if domain_packs.extra(getattr(ctx, "domain", "")):
+            pack_ids_only = []                      # extra layouts: Cortex may pick any layout
+        else:
+            pack_ids_only = pack_ids
+        cortex_pick = info.get("layout") if not pack_ids_only or info.get("layout") in pack_ids_only else None
+        variant = ruled or cortex_pick or pick_variant(persona, asked or goal, ctx, focus)
         if variant == "question" and not focus.get("dimension"):
-            variant = variant_ids(persona)[0]          # nothing specific asked: the default layout
+            variant = variant_ids(persona, ctx)[0]     # nothing specific asked: the default layout
     pages = build_layout(ctx, persona, chosen, variant, focus, asked or goal, gov)
     if not pages:
         raise ValueError("No tile of the persona layout is valid for this semantic view.")
-    vmeta = next(v for v in VARIANTS[persona] if v["id"] == variant)
+    vmeta = next(v for v in all_variants(persona, ctx) if v["id"] == variant)
     plan_ok = has_plan(ctx, chosen)
     digest = hashlib.sha1(json.dumps(pages, sort_keys=True).encode()).hexdigest()[:8]
     by_cortex = info["origin"] == "cortex"
-    default = variant == variant_ids(persona)[0]
+    default = variant == variant_ids(persona)[0]          # generic default keeps the audience title
     return {
         "template_id": f"persona-{persona}-{variant}-{digest}", "template_version": 1, "origin": "persona",
         "persona": persona, "audience_id": persona, "layout_variant": variant,
@@ -588,5 +619,23 @@ def compose_persona(cortex, ctx: DataContext, goal: str, variant: Optional[str] 
         "provenance": (f"Reviewed {persona.replace('_', ' ')} layout '{vmeta['title']}' · slots filled by Cortex "
                        f"AI_COMPLETE ({info.get('provenance', '')})" if by_cortex
                        else f"Reviewed {persona.replace('_', ' ')} layout '{vmeta['title']}' · default slots"),
-        "pages": pages, "governance": gov.entries,
+        "pages": pages, "governance": gov.entries, "pack": _pack_info(ctx, persona, variant, pages),
     }
+
+
+def _pack_info(ctx: DataContext, persona: str, variant: str, pages: list) -> Optional[dict[str, Any]]:
+    """A domain pack layout: the business pack it comes from and its metrics (Review starts with these selected)."""
+    if not domain_packs.get(getattr(ctx, "domain", ""), persona, variant):
+        return None
+    ids = []
+    for p in pages:
+        for c in p.get("components") or []:
+            ids += [x for x in [c.get("metric_id"), c.get("metric"), c.get("metric2"), *(c.get("metrics") or [])]
+                    if isinstance(x, str)]
+    labels = []
+    for i in dict.fromkeys(ids):
+        try:
+            labels.append(ctx.model.field(i, ("metric",)).label)
+        except Exception:
+            continue
+    return {"domain": getattr(ctx, "domain", ""), "metrics": labels}

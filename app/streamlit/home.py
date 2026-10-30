@@ -736,3 +736,182 @@ def pick_primary(model, hint: str, prompt: str) -> Optional[str]:
             if cand and cand in text and len(cand) > best_len:
                 best, best_len = m.id, len(cand)
     return best
+
+
+# --------------------------------------------------------------------------- persona ideas
+PERSONA_IDEAS = 6
+
+
+def _persona_views(catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    feat = [c for c in catalog if c.get("featured")]
+    return (feat or catalog)[:3]
+
+
+def _labels_for(c: dict[str, Any], names: list[str]) -> list[str]:
+    by_name = {m["id"].split(".")[-1].upper(): m["label"] for m in c["metrics"]}
+    return [by_name[n.upper()] for n in names if n.upper() in by_name]
+
+
+def _persona_idea(c: dict[str, Any], persona: dict[str, Any], title: str, detail: str, metrics: list[str],
+                  goal: str, by: str, theme: str = "") -> dict[str, Any]:
+    return {"audience": persona["audience"], "persona": persona["id"], "persona_label": persona["label"],
+            "title": title[:80], "detail": detail[:160], "metrics": metrics[:4], "semantic_view": c["fqn"],
+            "domain": c["label"][:40], "goal": goal[:300], "theme": theme[:40], "theme_label": theme[:40],
+            "by": by, "featured": bool(c.get("featured"))}
+
+
+_STOP = set("the a an of and or to in is are by for vs which what how where who it its this that our we has have any".split())
+
+
+def _words(t: str) -> set:
+    return {w for w in re.findall(r"[a-z]+", (t or "").lower()) if len(w) > 2 and w not in _STOP}
+
+
+def persona_fallback(catalog: list[dict[str, Any]], persona: dict[str, Any], tiles: list[dict[str, Any]]) -> list[dict]:
+    """Without Cortex: one idea per question the persona asks (ontology section 5). Each question takes the metrics
+    of the tile in the persona's own layout that answers it (closest wording), so the ideas stay the persona's."""
+    views = _persona_views(catalog)
+    if not views:
+        return []
+    c = views[0]
+    out = []
+    for q in persona["questions"]:
+        best = max(tiles, key=lambda t: len(_words(q) & _words(t["text"])), default=None)
+        named = [m["label"] for m in c["metrics"]                          # metrics the question names itself first
+                 if _words(m["label"]) and _words(m["label"]) <= _words(q) and not VARIANCE.search(m["id"].split(".")[-1])]
+        mets = list(dict.fromkeys(named + (_labels_for(c, best["metrics"]) if best else [])))
+        mets = mets or [m["label"] for m in c["metrics"][:3]]
+        out.append(_persona_idea(c, persona, q.rstrip("?.")[:80],
+                                 f"For the {persona['label']}: {persona['decides'][:1].lower()}{persona['decides'][1:]}.",
+                                 mets[:4], f"For the {persona['label']} ({persona['owns']}): {q}", "persona-questions"))
+    return out
+
+
+def _in_lane(mets: list[str], lane: set) -> bool:
+    """Stay in lane: most of an idea's metrics are the persona's own; at most one supporting metric from outside."""
+    if not lane:
+        return True
+    inside = sum(1 for m in mets if m.lower() in lane)
+    return inside >= 1 and len(mets) - inside <= 1
+
+
+def movers_fallback(catalog: list[dict[str, Any]], persona: dict[str, Any], movers: list[dict[str, Any]],
+                    lane_labels: list[str]) -> list[dict]:
+    """Without Cortex: one idea per thing that is moving for this persona (the numbers come from governed SQL)."""
+    views = _persona_views(catalog)
+    if not views or not movers:
+        return []
+    c = views[0]
+    out = []
+    for i, mv in enumerate(movers[:6]):
+        mets = list(dict.fromkeys([mv["metric"]] + [x for x in lane_labels if x != mv["metric"]][:2]))
+        idea = _persona_idea(c, persona, f"{mv['metric']} by {mv['dimension']}", mv["finding"], mets,
+                             f"For the {persona['label']}: {mv['metric']} by {mv['dimension']}, last 13 weeks vs last year.",
+                             "movers", "What moved")
+        idea["signal"] = mv["finding"]
+        out.append(idea)
+    return out
+
+
+def persona_ideas(cortex, catalog: list[dict[str, Any]], persona: dict[str, Any], company: str = "",
+                  avoid: Optional[list[str]] = None, watches: Optional[list[str]] = None,
+                  lane_labels: Optional[list[str]] = None, movers: Optional[list[dict[str, Any]]] = None,
+                  data_through: str = "") -> list[dict[str, Any]]:
+    """Cortex writes dashboard ideas for ONE persona at run time: who they are, what the role watches (persona
+    guidance), and what is moving in this week's data (movers computed by governed SQL, never by the model).
+    Code checks every idea: real metrics only, in the persona's lane, nothing from the 'not in this data' list."""
+    from ai_services import _json_from_text
+    views = _persona_views(catalog)
+    if not views:
+        raise ValueError("No governed data in this workspace")
+    lane = {x.lower() for x in (lane_labels or [])}
+    missing = "; ".join(persona.get("missing") or []) or "none"
+    mv_text = "\n".join(f"  {i + 1}. {m['finding']}" for i, m in enumerate(movers or [])) or "  (none computed)"
+    prompt = (
+        f"You are a senior analytics lead at {company or 'the company'} proposing dashboards for ONE person.\n"
+        f"Persona: {persona['label']}\nOwns: {persona['owns']}\nCore decision: {persona['decides']}\n"
+        f"What this role watches in the industry: {'; '.join(watches or []) or 'not given'}\n"
+        f"The persona's own metrics in this data: {', '.join(lane_labels or []) or 'any'}\n"
+        f"Not available in this data (never propose these): {missing}\n"
+        f"What moved in the data (last 13 weeks vs the same weeks last year, data through {data_through or 'latest'}; "
+        f"computed by SQL, exact):\n{mv_text}\n"
+        f"Available governed data:\n{_catalog_text(views)}\n"
+        f"Propose {PERSONA_IDEAS} dashboard ideas for this persona only, in their words. Mix: at least 3 ideas that "
+        "investigate a specific movement above (say which number), 2 that monitor what the role watches, 1 that supports "
+        "the core decision. Use mostly the persona's own metrics (at most one supporting metric from elsewhere); "
+        "2-4 metrics per idea, exact labels from the data. Do not restate the example questions. "
+        + (f"Do not repeat these titles: {' | '.join(avoid)}. " if avoid else "")
+        + "Title: a specific promise (max 9 words). Detail: what they will learn and could do (max 22 words). "
+        'Respond with JSON only: {"ideas": [{"title": "", "detail": "", "theme": "<2-3 word theme>", '
+        '"signal": <number of the movement it investigates, or 0>, "metrics": ["<metric label>"], '
+        '"semantic_view": "<view fqn from the list>", "goal": "<instruction for the dashboard designer>"}]}')
+    text, _ = cortex.complete(prompt)
+    raw = _json_from_text(text).get("ideas") or []
+    by_fqn = {c["fqn"]: c for c in views}
+    out, seen = [], set()
+    for s_ in raw:
+        if not isinstance(s_, dict) or not s_.get("title"):
+            continue
+        fqn = str(s_.get("semantic_view") or "").upper().replace('"', "")
+        fqn = fqn if fqn in by_fqn else (_resolve_view(fqn, by_fqn) or views[0]["fqn"])
+        c = by_fqn[fqn]
+        labels = {m["label"].lower(): m["label"] for m in c["metrics"]}
+        mets = list(dict.fromkeys(labels[str(m).lower()] for m in (s_.get("metrics") or []) if str(m).lower() in labels))
+        mets = _plain_metrics(mets, c)
+        if not mets or not _in_lane(mets, lane):
+            continue                                   # validated: governed metrics, in the persona's lane
+        key = str(s_["title"]).strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        idea = _persona_idea(c, persona, str(s_["title"]), str(s_.get("detail") or ""), mets,
+                             str(s_.get("goal") or s_["title"]), "cortex", str(s_.get("theme") or ""))
+        try:
+            k = int(s_.get("signal") or 0)
+        except (TypeError, ValueError):
+            k = 0
+        if movers and 1 <= k <= len(movers):
+            idea["signal"] = movers[k - 1]["finding"]          # the exact SQL finding, not the model's paraphrase
+        out.append(idea)
+    if len(out) < 3:
+        raise ValueError("Cortex returned too few valid persona ideas")
+    return out[:PERSONA_IDEAS]
+
+
+PERSONA_AUDIENCES = ("executives", "managers", "daily_operations")
+
+
+def draft_persona(cortex, catalog: list[dict[str, Any]], text: str, company: str = "") -> dict[str, Any]:
+    """A typed-in role ("I'm a collections manager") -> a persona card drafted by Cortex from this workspace's
+    governed metrics. The person reviews it before it is used; it stays marked 'drafted by Cortex'."""
+    from ai_services import _json_from_text
+    views = _persona_views(catalog)
+    if not views:
+        raise ValueError("No governed data in this workspace")
+    text = re.sub(r"\s+", " ", str(text or "")).strip()[:300]
+    if len(text) < 4:
+        raise ValueError("Describe your role, e.g. \"I'm a collections manager\".")
+    prompt = (
+        f"A person at {company or 'the company'} describes their role: \"{text}\".\n"
+        f"Governed data available:\n{_catalog_text(views)}\n"
+        "Draft their analytics persona. Use ONLY metric labels that appear above. List what this role usually watches in "
+        "the industry (even if not in the data), and say plainly what is not in this data. "
+        'Respond with JSON only: {"label": "<role title, max 5 words>", "owns": "<what they own, max 10 words>", '
+        '"decides": "<their core decision, max 14 words>", "questions": ["<3 questions they ask weekly>"], '
+        '"watches": ["<4-6 KPIs this role watches in the industry>"], "metrics": ["<3-8 metric labels from the data>"], '
+        '"missing": ["<0-3 things they need that this data does not have>"], '
+        '"audience": "<executives | managers | daily_operations>"}')
+    raw, _ = cortex.complete(prompt)
+    d = _json_from_text(raw)
+    c = views[0]
+    labels = {m["label"].lower(): m["label"] for v in views for m in v["metrics"]}
+    mets = list(dict.fromkeys(labels[str(m).lower()] for m in (d.get("metrics") or []) if str(m).lower() in labels))[:8]
+    label = re.sub(r"[^\w &/,.()+-]", "", str(d.get("label") or ""))[:40].strip()
+    if not label or len(mets) < 2:
+        raise ValueError("Cortex couldn't match that role to this workspace's metrics. Try describing what you decide.")
+    aud = d.get("audience") if d.get("audience") in PERSONA_AUDIENCES else "managers"
+    clean = lambda xs, n, k: [re.sub(r"\s+", " ", str(x)).strip()[:k] for x in (xs or []) if str(x).strip()][:n]
+    return {"label": label, "owns": str(d.get("owns") or "")[:80], "decides": str(d.get("decides") or "")[:120],
+            "questions": clean(d.get("questions"), 3, 140), "watches": clean(d.get("watches"), 6, 60),
+            "metrics": mets, "missing": clean(d.get("missing"), 3, 120), "audience": aud, "layout": None,
+            "alerts": [], "custom": True, "from_text": text}

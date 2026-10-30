@@ -1,0 +1,7 @@
+segment_id,segment_name,avg_fico,portfolio_mix_pct,description
+SEG-01,Prime Revolver,760,24.0,"High balance, carries balance, rate sensitive"
+SEG-02,Prime Transactor,780,21.0,"Pays in full, interchange-driven, rewards sensitive"
+SEG-03,Near-Prime Revolver,665,17.0,"Moderate balance, elevated loss rate"
+SEG-04,Subprime Builder,595,9.0,"Credit building, highest loss rate"
+SEG-05,Mass Affluent Saver,775,18.0,"Deposit heavy, highly rate sensitive"
+SEG-06,Small Business Owner,720,11.0,"Mixed card and deposit, seasonal cash cycle"

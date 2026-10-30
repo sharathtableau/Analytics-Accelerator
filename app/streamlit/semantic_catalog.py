@@ -47,6 +47,22 @@ def row_dict(row: Any) -> dict[str, Any]:
     return {str(k).strip('"').lower(): v for k, v in data.items()}
 
 
+_ACRONYMS = {"Pct": "%", "Dpd": "DPD", "Nii": "NII", "Nim": "NIM", "Fico": "FICO", "Acv": "ACV", "Pos": "POS",
+             "Cogs": "COGS", "Aov": "AOV", "Upt": "UPT", "Cac": "CAC", "Otif": "OTIF", "Yoy": "YoY", "Ytd": "YTD",
+             "Kpi": "KPI", "Sku": "SKU", "Dc": "DC", "Usd": "USD", "Gm": "GM", "Apr": "APR", "Apy": "APY", "Id": "ID"}
+_SMALL = {"To", "Vs", "Per", "Of", "And", "By", "In", "On"}
+
+
+def pretty_label(name: str) -> str:
+    """NET_INTEREST_MARGIN_PCT -> 'Net Interest Margin %', DPD_30_BALANCE -> 'DPD 30 Balance'."""
+    words = [w for w in str(name or "").replace("_", " ").title().split(" ") if w]
+    out = []
+    for i, w in enumerate(words):
+        w = _ACRONYMS.get(w, w)
+        out.append(w.lower() if i and w in _SMALL else w)
+    return " ".join(out).replace(" %", " %").strip()
+
+
 @dataclass
 class Field:
     entity: str
@@ -90,7 +106,7 @@ class Field:
 
     @property
     def label(self) -> str:
-        return getattr(self, "custom_label", None) or self.name.replace("_", " ").title()
+        return getattr(self, "custom_label", None) or pretty_label(self.name)
 
 
 @dataclass

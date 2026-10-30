@@ -1,0 +1,1 @@
+PUT 'file://C:/Users/SharathKumarKammari/Downloads/snowflake-react-app-runtime/Analytics_Accelerator_Enterprise_Claude/setup/finance/data/*.csv' @WBR_DB.FINANCE_DEMO.FINANCE_DATA_STAGE OVERWRITE = TRUE;

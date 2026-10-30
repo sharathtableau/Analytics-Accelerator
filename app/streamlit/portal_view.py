@@ -47,6 +47,9 @@ div[data-testid='stVerticalBlockBorderWrapper']{padding:6px;background:#fff;bord
 div[data-testid='stVerticalBlockBorderWrapper']:hover{border-color:#29b5e8!important;box-shadow:0 8px 24px -16px rgba(17,86,127,.45)}
 div[data-testid='stVerticalBlockBorderWrapper'] button{border-radius:6px;font-weight:600;border:1px solid #11567f;color:#11567f;background:#fff}
 div[data-testid='stVerticalBlockBorderWrapper'] button:hover{background:#11567f;color:#fff;border-color:#11567f}
+.pt-ws-ic{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:24px}
+.pt-ws-ic.sm{width:30px;height:30px;border-radius:8px;font-size:16px;display:inline-flex}
+.pt-ws-bar{display:flex;align-items:center;gap:10px;margin:18px 0 8px;font-size:15px;color:#0b2440}.pt-ws-bar span:last-child{color:#5b6b82;font-size:13.5px}
 .stTextInput input{border-radius:6px}
 button[data-testid='stBaseButton-primary'],button[kind='primary']{background:#11567f!important;border:1px solid #11567f!important;color:#fff!important;border-radius:6px!important;font-weight:600}
 button[data-testid='stBaseButton-primary']:hover,button[kind='primary']:hover{background:#0b2440!important;border-color:#0b2440!important}
@@ -124,8 +127,31 @@ def _label(aud: str) -> str:
     return AUDIENCE_LABEL.get(aud) or (aud or "Other").replace("_", " ").capitalize()
 
 
+def _workspace_picker(ws: dict) -> None:
+    """Choose your workspace: one card per business domain that has dashboards published for this viewer."""
+    st.markdown("<div class='pt'><div class='pt-group'>Choose your workspace</div>"
+                "<p class='pt-blurb'>Dashboards are grouped by line of business. Your choice is remembered.</p></div>",
+                unsafe_allow_html=True)
+    items = ws["items"]
+    cols = st.columns(min(3, len(items)) or 1, gap="medium")
+    for col, w in zip(cols * ((len(items) + 2) // 3), items):
+        with col:
+            with st.container(border=True):
+                n = w.get("count") or 0
+                st.markdown(
+                    f"<div class='pt'><div class='pt-ws-ic' style='background:{html.escape(w.get('soft') or '#e8f1fd')}'>"
+                    f"{html.escape(w.get('icon') or '')}</div>"
+                    f"<p class='pt-name' style='min-height:0;margin-top:12px'>{html.escape(w.get('name') or '')}</p>"
+                    f"<p class='pt-meta'>{html.escape(' · '.join(x for x in (w.get('company'), w.get('tagline')) if x))}</p>"
+                    f"<p class='pt-note'>{html.escape(w.get('blurb') or '')}</p>"
+                    f"<p class='pt-meta'><b>{n}</b> dashboard{'' if n == 1 else 's'}</p></div>",
+                    unsafe_allow_html=True)
+                st.button(f"Open {w.get('name')}", key=f"pt_ws_{w['id']}", use_container_width=True,
+                          on_click=ws["pick"], args=(w["id"],))
+
+
 def render(published: list[dict], viewer: str, flash: str = "", base_url: str = "", portal_url: str = "",
-           sharing=None) -> None:
+           sharing=None, workspaces: dict | None = None) -> None:
     """sharing: optional dict with can_share(d) -> bool, roles() -> list[str], on_save(did) callback."""
     """Draw the catalog. Clicking Open sets ?view=<dashboard_id>; the caller reacts on the next run."""
     st.markdown(CSS, unsafe_allow_html=True)
@@ -141,6 +167,23 @@ def render(published: list[dict], viewer: str, flash: str = "", base_url: str = 
         st.markdown("<div class='pt'><div class='pt-empty'>No dashboards have been published for you yet.</div></div>",
                     unsafe_allow_html=True)
         return
+
+    ws = workspaces or {}
+    if len(ws.get("items") or []) > 1:            # more than one line of business: pick one (remembered)
+        cur = next((w for w in ws["items"] if w["id"] == ws.get("current")), None)
+        if not cur:
+            _workspace_picker(ws)
+            return
+        c1, c2 = st.columns([5, 1.3], gap="small")
+        with c1:
+            st.markdown(
+                f"<div class='pt'><div class='pt-ws-bar'><span class='pt-ws-ic sm' style='background:"
+                f"{html.escape(cur.get('soft') or '#e8f1fd')}'>{html.escape(cur.get('icon') or '')}</span>"
+                f"<b>{html.escape(cur.get('name') or '')}</b><span>{html.escape(cur.get('company') or '')}</span></div></div>",
+                unsafe_allow_html=True)
+        with c2:
+            st.button("Switch workspace", key="pt_ws_switch", use_container_width=True, on_click=ws["pick"], args=("",))
+        published = [d for d in published if d.get("_domain") == cur["id"]]
 
     q = st.text_input("Search dashboards", key="pt_search", placeholder="Search dashboards",
                       label_visibility="collapsed").strip().lower()

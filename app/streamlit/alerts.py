@@ -19,7 +19,7 @@ import alerts_core as core
 from engine import fmt_kind
 from semantic_query import SemanticQuery
 
-RULES = ("threshold", "change", "plan", "freshness")
+RULES = ("threshold", "change", "plan", "freshness", "unusual")
 GRAINS = ("day", "week", "month")
 FREQS = ("hourly", "daily", "weekly")
 EMAIL = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
@@ -39,7 +39,8 @@ def plan_for(model, metric_id: str) -> Optional[str]:
     return None
 
 
-def options(model, distinct_values: dict[str, list[str]], kinds: Optional[dict] = None) -> dict[str, Any]:
+def options(model, distinct_values: dict[str, list[str]], kinds: Optional[dict] = None,
+            weekly: bool = False) -> dict[str, Any]:
     """What the form offers: metrics (not plan columns) and the filterable dimensions with their values.
     kinds = metric id -> percent/currency/number measured on the data (a name like GROSS_MARGIN can be an amount)."""
     kinds = kinds or {}
@@ -47,7 +48,7 @@ def options(model, distinct_values: dict[str, list[str]], kinds: Optional[dict] 
             for m in model.metrics if not PLAN_RE.search(m.name)]
     dims = [{"id": d.id, "label": d.label, "values": distinct_values.get(d.id) or []}
             for d in model.categorical_dimensions if distinct_values.get(d.id)]
-    return {"metrics": mets, "dims": dims}
+    return {"metrics": mets, "dims": dims, "grains": ["week", "month"] if weekly else list(GRAINS), "weekly": weekly}
 
 
 def _match_value(val: str, allowed: list[str]) -> Optional[str]:
@@ -56,7 +57,8 @@ def _match_value(val: str, allowed: list[str]) -> Optional[str]:
 
 
 def normalize(model, raw: dict[str, Any], distinct_values: dict[str, list[str]],
-              time_dim: str, defaults: Optional[dict] = None, kinds: Optional[dict] = None) -> tuple[dict[str, Any], list[str]]:
+              time_dim: str, defaults: Optional[dict] = None, kinds: Optional[dict] = None,
+              weekly: bool = False) -> tuple[dict[str, Any], list[str]]:
     """Validated alert spec + the list of problems a person must fix before saving (empty = ready)."""
     d = {**(defaults or {}), **{k: v for k, v in (raw or {}).items() if v not in (None, "")}}
     issues: list[str] = []
@@ -94,7 +96,9 @@ def normalize(model, raw: dict[str, Any], distinct_values: dict[str, list[str]],
     spec["filters"], spec["filter_labels"] = flt, labels
     rule = d.get("rule") if d.get("rule") in RULES else "threshold"
     spec["rule"] = rule
-    spec["grain"] = d.get("grain") if d.get("grain") in GRAINS else "day"
+    spec["grain"] = d.get("grain") if d.get("grain") in GRAINS else ("week" if weekly else "day")
+    if weekly and spec["grain"] == "day":
+        spec["grain"] = "week"          # weekly data: there is no 'latest full day
     if rule == "threshold":
         spec["op"] = "above" if d.get("op") == "above" else "below"
         v = core._num(d.get("value_input") if d.get("value_input") not in (None, "") else d.get("value"))
@@ -118,6 +122,17 @@ def normalize(model, raw: dict[str, Any], distinct_values: dict[str, list[str]],
             spec["plan_metric"] = plan_for(model, mid) if mid else None
             if mid and not spec["plan_metric"]:
                 issues.append(f"{spec['metric_label']} has no plan in this semantic view; use another rule.")
+    elif rule == "unusual":
+        spec["sensitivity"] = "high" if d.get("sensitivity") == "high" else "normal"
+        spec["direction"] = d.get("direction") if d.get("direction") in ("up", "down", "either") else "either"
+        by = d.get("by")
+        by = by if by in dims else dlabel.get(str(by or "").lower())
+        if by:
+            n_vals = len(distinct_values.get(by) or [])
+            if n_vals > 50:
+                issues.append(f"{dims[by].label} has {n_vals} values; watch a breakdown with 50 or fewer.")
+            else:
+                spec["by"], spec["by_label"] = by, dims[by].label
     else:
         n = core._num(d.get("days"))
         spec["days"] = int(n) if n and n >= 1 else 1
@@ -158,7 +173,14 @@ def check_sql(model, spec: dict[str, Any]) -> str:
     for did, vals in (spec.get("filters") or {}).items():
         lits = ", ".join("'" + str(v).replace("'", "''") + "'" for v in vals)
         parts.append(f"{q.dim(did).ref} IN ({lits})")
-    return ("SELECT * FROM " + q._sv([q.trunc(time, spec.get("grain", "day"))], mets, " AND ".join(parts))
+    grain = spec.get("grain", "day")
+    if spec.get("rule") == "unusual" and spec.get("by"):
+        # the total and every member of the breakdown, in one governed query (a rate is never summed from segments)
+        seg = f"{q.dim(spec['by']).ref} AS SEG"
+        return ("SELECT PERIOD, '(All)' AS SEG, M0 FROM " + q._sv([q.trunc(time, grain)], mets, " AND ".join(parts))
+                + " UNION ALL SELECT PERIOD, SEG::VARCHAR AS SEG, M0 FROM "
+                + q._sv([q.trunc(time, grain), seg], mets, " AND ".join(parts)) + " ORDER BY PERIOD")
+    return ("SELECT * FROM " + q._sv([q.trunc(time, grain)], mets, " AND ".join(parts))
             + " ORDER BY PERIOD")
 
 
@@ -173,7 +195,9 @@ def prompt(opts: dict[str, Any], text: str, defaults: dict[str, Any]) -> str:
         f"Current tile metric (use it when the request does not name one): {defaults.get('metric') or 'none'}\n"
         f"Metrics (use the id):\n{mets}\nFilter dimensions and their values (use exact values):\n{dims}\n"
         "Rules: threshold (value is above/below a number), change (moves by X% vs the previous period or the same "
-        "period last year), plan (X% below/above plan; only metrics that have a plan), freshness (no new data for N days).\n"
+        "period last year), plan (X% below/above plan; only metrics that have a plan), freshness (no new data for N days), "
+        "unusual (the latest period is outside its normal range from recent history; no number needed; optional by = a "
+        "dimension id to also watch every member, e.g. any region; sensitivity normal|high; direction up|down|either).\n"
         "Percent metrics: give numbers as shown to people (50 means 50%). Periods (grain): day, week, month.\n"
         "Schedule: hourly, daily (hour 0-23), weekly (weekday 0=Monday, hour). Default daily at 8.\n"
         "Recipients: only email addresses written in the request; put names without an address in missing_people.\n"
@@ -181,7 +205,7 @@ def prompt(opts: dict[str, Any], text: str, defaults: dict[str, Any]) -> str:
         "question and still fill what you can. If it describes two separate alerts, describe the first and set "
         "question to say the second needs its own alert.\n"
         'Respond with JSON only: {"metric": "<id>", "filters": {"<dimension id>": ["<value>"]}, "grain": "day", '
-        '"rule": "threshold|change|plan|freshness", "op": "below|above", "value": 0, "pct": 0, '
+        '"rule": "threshold|change|plan|freshness|unusual", "by": "<dimension id or empty>", "sensitivity": "normal|high", "op": "below|above", "value": 0, "pct": 0, '
         '"compare": "prior|year", "direction": "down|up|either", "plan_dir": "below|above", "days": 1, '
         '"schedule": {"freq": "daily", "hour": 8, "weekday": 0}, "recipients": [], "missing_people": [], '
         '"question": ""}')
@@ -226,6 +250,14 @@ def fallback_read(opts: dict[str, Any], text: str, defaults: dict[str, Any]) -> 
         n = n * 1e6
     if re.search(r"no (new )?data|not loaded|stale|missing data", low):
         out.update(rule="freshness", days=int(n or 1))
+    elif re.search(r"unusual|anomal|abnormal|out of (the )?ordinary|out of pattern|strange|spikes?\b|weird", low):
+        out.update(rule="unusual", sensitivity="high" if re.search(r"\b(sensitive|any small|slightest)\b", low) else "normal",
+                   direction="up" if re.search(r"\b(spikes?|jumps?|surges?|too high)\b", low) else
+                   "down" if re.search(r"\b(drops?|dips?|too low)\b", low) else "either")
+        for d in opts["dims"]:
+            if re.search(r"\b(any|each|every|by)\s+" + re.escape(d["label"].lower()), low):
+                out["by"] = d["id"]
+                break
     elif "plan" in low or "target" in low or "budget" in low:
         out.update(rule="plan", pct=n, plan_dir="above" if re.search(r"\b(above|over|ahead)\b", low) else "below")
     elif re.search(r"\b(drops?|falls?|rises?|grows?|jumps?|changes?|moves?) (by|more than)\b|\bvs (last|prior|previous)\b", low):

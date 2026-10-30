@@ -15,3 +15,5 @@ Claude outputs/
 *.p8
 *.pem
 connections.toml
+_backups/
+_backups/

@@ -2,7 +2,7 @@
 
 Every relevant Snowflake capability, where it appears in the app, and a reason for anything not used.
 Status: ✅ Used (live) · 🔧 Built, pending first live run · 🟡 Partial · 📅 Planned (see ENTERPRISE_TRACKER.md) · ⛔ Deliberately not used
-Last updated: 1 Oct 2026
+Last updated: 23 Oct 2026 (rows added 1–23 Oct are in the last section)
 
 ## Semantic layer and data
 | Capability | Status | Where / why |
@@ -13,7 +13,7 @@ Last updated: 1 Oct 2026
 | Horizon Catalog / governed context for metrics | 📅 | B3 — verify product names (Horizon Context / Cortex Sense) before claiming |
 | Auto-drafted semantic views (profile → `AI_COMPLETE` → approve → create) | 🔧 | Home → Connect a Snowflake table: Cortex drafts dimensions, metrics, ratios, synonyms and definitions from a column profile; validator + human review; `CREATE SEMANTIC VIEW` |
 | Metrics drafted for facts-only semantic views (profile through the view → `AI_COMPLETE` → validator → review) | 🔧 | Views without metrics (e.g. `SANDBOX.BI.INFERA_SEMANTIC_VIEW`) get metrics from their facts; queried as ad-hoc metrics with the semantic view's standard-SQL interface; owner can paste the generated METRICS clause |
-| Dynamic tables / streams / tasks | ⛔ | Demo "live feed" is time-revealed views over pre-generated data; a real client would land data with Snowpipe/dynamic tables — nothing in the app depends on how data arrives |
+| Dynamic tables / streams | ⛔ | Demo "live feed" is time-revealed views over pre-generated data; a real client would land data with Snowpipe/dynamic tables — nothing in the app depends on how data arrives |
 
 ## Cortex AI (AISQL)
 | Capability | Status | Where / why |
@@ -74,3 +74,16 @@ Last updated: 1 Oct 2026
 | Native App (with agents + MCP, GA 7 Aug 2026) | 📅 | E1 — decision pending on React↔Python bridge inside a Native App |
 | Marketplace / private listing | 📅 | E2 |
 | Cortex Code (CoCo) | 📅 | G2 — optional build talking point |
+
+## Added since 1 Oct (state on 23 Oct)
+| Capability | Status | Where / why |
+|---|---|---|
+| Tasks + stored procedure (Python) | 🔧 | Data alerts: hourly `AA_ALERTS_TASK` calls `AA_RUN_ALERTS`, which runs the check SQL saved with each alert (built from the semantic view, never from user text). EXECUTE TASK for WBR_OWNER still to confirm |
+| `SYSTEM$SEND_EMAIL` + notification integration | ✅ | Alert emails through `AA_EMAIL_INT`; first live email received 21 Oct. The only traffic that leaves the account |
+| Semantic views per domain | ✅ | `RETAIL_ANALYTICS_SV`, `FINANCE_ANALYTICS_SV`, `CPG_ANALYTICS_SV` (INFERA pack data with fixes: stocks NON ADDITIVE BY week, weighted rates, card-only denominators) |
+| Cortex Search per domain | ✅ | `RETAIL_DOCS_SEARCH`, `FINANCE_DOCS_SEARCH`, `CPG_DOCS_SEARCH` (ontology + policies) feed each domain's agent |
+| `AI_COMPLETE` for persona ideas | 🔧 | Ideas per domain persona from its decisions and questions, metrics checked against the catalog (22 Oct). v2 planned: data-aware (top movers) |
+| `AI_COMPLETE` for alerts in plain English | ✅ | Reads fields only; every part checked against the semantic view |
+| Validation on demand + publish gate | 🔧 | QA-01..08 run on request; publish requires a fresh validation |
+| In-app UAT sign-off | 🔧 | `AA_UAT_SIGNOFFS`; fix loop; Home attention strip |
+| Analysis tiles (domain) | 🔧 | outlier lines, change bars, driver / velocity split, stacked trend, metric waterfall; scatter + heatmap options |

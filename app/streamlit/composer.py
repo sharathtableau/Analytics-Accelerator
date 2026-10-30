@@ -69,6 +69,24 @@ TILES: dict[str, dict[str, Any]] = {
     "pnl_table": {"label": "P&L table", "fields": ["metrics", "dimension"], "dim_range": (2, 12), "width": 12,
                   "use": "Statement-style table: 2-8 metrics as rows, the values of a small dimension as columns plus "
                          "a total, each cell coloured by its change vs the comparison period."},
+    # analysis tiles (domain_tiles.py): one story each, compared over whole windows
+    "outlier_lines": {"label": "Outlier lines", "fields": ["metric", "dimension"], "dim_range": (2, 60), "time": True,
+                      "width": 7, "use": "Every value of a small dimension as a line on ONE chart over the last year, the "
+                                         "one that moved (or crossed a reference line) highlighted, the rest grey."},
+    "change_bars": {"label": "Change bars", "fields": ["metric", "dimension"], "dim_range": (2, 60), "time": True,
+                    "width": 6, "use": "Change vs the same weeks last year per dimension value as diverging bars, worst "
+                                       "first (rates in points, amounts in %)."},
+    "driver_split": {"label": "Driver split", "fields": ["metrics"], "time": True, "width": 5,
+                     "use": "An outcome and the drivers it is the product of (e.g. sales = orders x order value): % "
+                            "change of each vs last year. metrics = [outcome, driver1, driver2, ...]."},
+    "velocity_split": {"label": "Distribution vs velocity", "fields": ["metric", "metric2", "dimension"],
+                       "dim_range": (2, 40), "time": True, "width": 7,
+                       "use": "Sales change per value split into a distribution effect (metric2 = distribution %) "
+                              "and a velocity effect."},
+    "stacked_trend": {"label": "Stacked trend", "fields": ["metrics"], "time": True, "width": 7,
+                      "use": "Two to four stock metrics stacked over time (e.g. past-due balances by age)."},
+    "metric_waterfall": {"label": "Metric waterfall", "fields": ["metrics"], "time": True, "width": 5,
+                         "use": "From one metric to another in steps (gross sales - trade spend - returns)."},
     "action_table": {"label": "Decision log", "fields": [], "width": 12,
                      "use": "Decisions with owner/due/status, stored in Snowflake."},
     # persona tiles (persona_tiles.py)
@@ -97,7 +115,11 @@ TILES: dict[str, dict[str, Any]] = {
                  "use": "What deviates today (vs the same weekday in the last 4 weeks) across metrics x "
                         "breakdowns, worst first, with Ask agent / Log decision on each row."},
 }
-METRIC_LIST_TYPES = ("kpi_grid", "detail_table", "kpi_plan", "scorecard", "status_tiles", "worklist", "pnl_table")
+METRIC_LIST_TYPES = ("kpi_grid", "detail_table", "kpi_plan", "scorecard", "status_tiles", "worklist", "pnl_table",
+                     "driver_split", "stacked_trend", "metric_waterfall")
+MIN_METRICS = {"driver_split": 3, "stacked_trend": 2, "metric_waterfall": 2}
+OPT_KEYS = ("reference", "reference_label", "reference_y", "band", "center", "mode", "display", "better", "index",
+            "periods", "trail", "smooth", "compare", "cumulative", "labels", "label", "noun", "filter", "steps")
 FULL_WIDTH = ("kpi_grid", "heatmap", "small_multiples", "detail_table", "action_table", "kpi_plan",
               "status_tiles", "worklist", "pnl_table")
 ALIASES = {
@@ -111,6 +133,8 @@ ALIASES = {
     "risk_table": "exception_table", "decisions": "action_table", "comparison": "period_compare",
     "grouped_bar": "period_compare", "combo": "combo_chart", "bar_line": "combo_chart", "dual_axis": "combo_chart",
     "tree_map": "treemap", "gauge_chart": "gauge", "progress": "gauge", "runway": "gauge", "pnl": "pnl_table",
+    "highlight_lines": "outlier_lines", "outliers": "outlier_lines", "diverging_bar": "change_bars",
+    "dumbbell": "change_bars", "decomposition": "driver_split", "gross_to_net": "metric_waterfall",
     "p_and_l": "pnl_table", "statement": "pnl_table", "pivot": "pnl_table",
 }
 AUDIENCE_BRIEF = {
@@ -128,6 +152,7 @@ class DataContext:
     profile: Profile
     distinct: dict[str, int]
     audience: str
+    domain: str = ""                  # workspace (retail / finance / cpg): selects the domain layout pack
 
     def granted(self, cap: str) -> bool:
         ev = self.profile.capabilities.get(cap)
@@ -346,6 +371,71 @@ class Validator:
                 return d
         return None
 
+    def _opts(self, raw: Any, t: str, out: dict[str, Any], notes: list[str]) -> dict[str, Any]:
+        """Tile options, sanitised: numbers stay numbers, words come from fixed lists, filters and steps name real
+        fields. Anything else is dropped."""
+        if not isinstance(raw, dict):
+            return {}
+        o: dict[str, Any] = {}
+
+        def num(v):
+            try:
+                f = float(v)
+                return f if f == f and abs(f) < 1e15 else None
+            except (TypeError, ValueError):
+                return None
+        for k in ("reference", "reference_y"):
+            if k in raw and num(raw[k]) is not None:
+                o[k] = num(raw[k])
+        for k in ("reference_label", "label", "noun"):
+            if isinstance(raw.get(k), str):
+                o[k] = raw[k].strip()[:40]
+        band = raw.get("band")
+        if isinstance(band, (list, tuple)) and len(band) == 2 and None not in (num(band[0]), num(band[1])):
+            o["band"] = sorted([num(band[0]), num(band[1])])
+        c = raw.get("center")
+        if c == "median" or num(c) is not None:
+            o["center"] = "median" if c == "median" else num(c)
+        for k, allowed in (("mode", ("change", "level")), ("display", ("bars", "dots")), ("better", ("up", "down", "none")),
+                           ("compare", ("yoy", "prior"))):
+            if raw.get(k) in allowed:
+                o[k] = raw[k]
+        for k in ("index", "cumulative"):
+            if raw.get(k) is True:
+                o[k] = True
+        for k, lo, hi in (("periods", 1, 104), ("trail", 4, 104), ("smooth", 1, 13)):
+            v = num(raw.get(k))
+            if v is not None:
+                o[k] = int(min(hi, max(lo, v)))
+        if isinstance(raw.get("labels"), list):
+            o["labels"] = [str(x)[:30] for x in raw["labels"][:6]]
+        flt = raw.get("filter")
+        if isinstance(flt, dict):
+            ms = [x for x in [out.get("metric_id"), out.get("metric2_id"), *(out.get("metrics") or [])] if x]
+            good = {}
+            for dname, vals in flt.items():
+                d = self.dim(dname)
+                if d and isinstance(vals, list) and vals and all(self.ctx.allowed(m, d) for m in ms):
+                    good[d] = [str(v)[:80] for v in vals[:20]]
+                else:
+                    notes.append(f"filter on '{dname}' removed (not valid for these metrics)")
+            if good:
+                o["filter"] = good
+        steps = raw.get("steps")
+        if t == "metric_waterfall" and isinstance(steps, list):
+            st = []
+            for item in steps[:8]:
+                if not isinstance(item, (list, tuple)) or len(item) < 2 or item[1] not in ("start", "minus", "plus", "total"):
+                    continue
+                mid = self.metric(item[0]) if item[0] else None
+                if item[0] and not mid:
+                    notes.append(f"step '{item[0]}' removed (unknown metric)")
+                    continue
+                st.append({"metric": mid, "op": item[1], **({"label": str(item[2])[:40]} if len(item) > 2 and item[2] else {})})
+            if st and st[0]["op"] == "start" and st[0]["metric"]:
+                o["steps"] = st
+        return o
+
     def tile(self, raw: Any, page_label: str, seen: set) -> Optional[dict[str, Any]]:
         if not isinstance(raw, dict):
             self.gov.add(page_label, "?", "dropped", "Tile was not a JSON object.")
@@ -481,10 +571,18 @@ class Validator:
             bad = [str(v) for v in asked if not self.metric(v)]
             if bad:
                 notes.append("removed unknown metrics " + ", ".join(bad))
+            if t in MIN_METRICS:
+                if t == "metric_waterfall":
+                    steps = (raw.get("opts") or {}).get("steps") or []
+                    ms = [x for x in (self.metric(st[0]) for st in steps if st and st[0]) if x]
+                if len(ms) < MIN_METRICS[t] or not all(self.ctx.allowed(x, b.time_dimension) for x in ms):
+                    self.gov.add(page_label, name, "dropped", f"{TILES[t]['label']} needs {MIN_METRICS[t]}+ metrics "
+                                                              "of this view related to the date.")
+                    return None
             if not ms and metric and self.metric(raw.get("metric")):
                 ms = [metric]
             cap = {"kpi_grid": 8, "kpi_plan": 5, "scorecard": 5, "status_tiles": 6, "worklist": 4,
-                   "pnl_table": 8}.get(t, 6)
+                   "pnl_table": 8, "driver_split": 4, "stacked_trend": 4, "metric_waterfall": 6}.get(t, 6)
             ms = list(dict.fromkeys(ms))[:cap]
             if not ms:
                 ms = ([b.primary_metric] + list(b.supporting_metrics))[:cap]
@@ -527,8 +625,37 @@ class Validator:
                 return None
             out["dimensions"], out["metrics"] = ds, ms2
 
+        if t == "velocity_split" or (t == "change_bars" and raw.get("metric2")):
+            m2 = self.metric(raw.get("metric2"))
+            if not m2 or m2 == metric or not self.ctx.allowed(m2, dim) or not self.ctx.allowed(m2, b.time_dimension):
+                if t == "change_bars":
+                    notes.append("second metric removed (not valid with this breakdown)")
+                    m2 = None
+                else:
+                    self.gov.add(page_label, name, "dropped", f"{TILES[t]['label']} needs a valid second metric.")
+                    return None
+            if m2:
+                out["metric2_id"] = m2
+        if t == "stacked_trend" and raw.get("dimension") and raw.get("metric2"):
+            d, m2 = self.dim(raw.get("dimension")), self.metric(raw.get("metric2"))
+            if d and m2 and self._fits(d, (2, 60)) and all(self.ctx.allowed(x, d) for x in out["metrics"] + [m2]):
+                out["dimension"], out["metric2_id"] = d, m2
+            else:
+                notes.append("focus breakdown removed (not valid for these metrics) → total")
+        if t == "scatter" and raw.get("dimension2"):
+            d2 = self.dim(raw.get("dimension2"))
+            if d2 and d2 != dim and self._fits(d2, (2, 12)) and all(self.ctx.allowed(x, d2) for x in (metric, out["metric2_id"])):
+                out["dimension2"] = d2
+            else:
+                notes.append("colour grouping removed (not valid for these metrics)")
+        opts = self._opts(raw.get("opts"), t, out, notes)
+        if opts:
+            out["opts"] = opts
+        if t == "metric_waterfall" and not opts.get("steps"):
+            self.gov.add(page_label, name, "dropped", "Metric waterfall needs its steps.")
+            return None
         key = (t, out.get("metric_id"), out.get("dimension"), out.get("metric2_id"), out.get("dimension2"),
-               tuple(out.get("metrics", ())), tuple(out.get("dimensions", ())))
+               tuple(out.get("metrics", ())), tuple(out.get("dimensions", ())), json.dumps(opts, sort_keys=True))
         if key in seen:
             self.gov.add(page_label, name, "dropped", "Duplicate of another tile on this dashboard.")
             return None
@@ -863,7 +990,8 @@ def apply_review(ctx: DataContext, spec: dict[str, Any], selected: list[str],
                         gov.append({"page": page["label"], "tile": c["title"], "action": "removed",
                                     "reason": "None of its metrics were selected in review."})
                         continue
-                elif any(c.get(k) and c[k] not in sel for k in ("metric_id", "metric2_id")):
+                elif any(c.get(k) and c[k] not in sel for k in (("metric_id", "metric2_id", "metric", "metric2")
+                                                                 if spec.get("pack") else ("metric_id", "metric2_id"))):
                     gov.append({"page": page["label"], "tile": c["title"], "action": "removed",
                                 "reason": "Its metric was deselected in review."})
                     continue
@@ -877,7 +1005,9 @@ def apply_review(ctx: DataContext, spec: dict[str, Any], selected: list[str],
     if not pages:
         raise ValueError("Keep at least one tile.")
     # newly selected metrics that no tile shows -> headline KPI cards on the first page
-    used = {m for p in pages for c in p["components"] for m in [c.get("metric_id"), c.get("metric2_id"), *(c.get("metrics") or [])] if m}
+    used = {m for p in pages for c in p["components"]
+            for m in [c.get("metric_id"), c.get("metric2_id"), c.get("metric"), c.get("metric2"), *(c.get("metrics") or [])]
+            if isinstance(m, str) and m}
     extra = [m for m in selected or [] if m not in used and ctx.allowed(m, ctx.bindings.time_dimension)]
     if extra:
         first = pages[0]

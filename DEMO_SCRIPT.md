@@ -1,5 +1,7 @@
 # Demo script — 15 minutes · Snowflake, Thu 8 Oct 2026
 
+> **Historical (kept for reference):** the 8 Oct demo script (Harborline only). For the current state read README.md, ENTERPRISE_TRACKER.md (section R), MULTI_DOMAIN_PLAN.md and ARCHITECTURE.md (updated 23 Oct 2026).
+
 Pitch: **every click is carried by a named Snowflake AI feature.** Say the feature name each time.
 Data: Harborline Outfitters (fictional US retailer), `WBR_DB.RETAIL_DEMO`, one semantic view, live feed.
 Status of each step is tracked in ENTERPRISE_TRACKER.md (F section).

@@ -78,7 +78,7 @@ if __name__ == "__main__":
 
 
 class ActionToolTests(unittest.TestCase):
-    PROC = "WBR_DB.ANALYTICS_ENTERPRISE.AA_CREATE_DECISION"
+    PROC = f"{config.APP_SCHEMA}.AA_CREATE_DECISION"
 
     def test_spec_v3_has_log_decision_procedure_tool(self):
         spec = ag.agent_spec(SV, "Retail", [], "POWERHOUSE", SRCH, self.PROC)
@@ -109,7 +109,7 @@ class ActionToolTests(unittest.TestCase):
 
 class EvaluationTests(unittest.TestCase):
     """D1: Snowflake-native Cortex Agent evaluations (EXECUTE_AI_EVALUATION / GET_AI_EVALUATION_DATA)."""
-    AGENT = "WBR_DB.ANALYTICS_ENTERPRISE.AA_RETAIL_ANALYTICS_SV_AGENT"
+    AGENT = f"{config.APP_SCHEMA}.AA_RETAIL_ANALYTICS_SV_AGENT"
 
     def test_config_maps_retail_agent_and_gate(self):
         self.assertTrue(config.EVAL_CONFIGS[self.AGENT].endswith("AA_EVAL_CONFIG/aa_agent_eval.yaml"))
@@ -120,7 +120,7 @@ class EvaluationTests(unittest.TestCase):
         from store import Store
         from fake_snowflake import FakeSession
         s = FakeSession()
-        st = Store(s, "WBR_DB.ANALYTICS_ENTERPRISE")
+        st = Store(s, config.APP_SCHEMA)
         st.eval_start(self.AGENT, config.EVAL_CONFIGS[self.AGENT], "aa_run_1")
         self.assertEqual(s.eval_started, ["aa_run_1"])
         self.assertEqual([r["run_name"] for r in st.eval_runs(self.AGENT)], ["aa_run_1"])
@@ -129,7 +129,7 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual({r["metric_name"] for r in res["summary"]},
                          {"answer_correctness", "cites_sources", "logical_consistency"})
         q, params = next((q, p) for q, p in s.sqls if "GET_AI_EVALUATION_DATA" in q)
-        self.assertEqual(params, ["WBR_DB", "ANALYTICS_ENTERPRISE", "AA_RETAIL_ANALYTICS_SV_AGENT", "aa_run_1"])
+        self.assertEqual(params, ["WBR_DB", config.APP_SCHEMA.split(".")[1], "AA_RETAIL_ANALYTICS_SV_AGENT", "aa_run_1"])
         self.assertIn("COMPLETED", st.eval_status(config.EVAL_CONFIGS[self.AGENT], "aa_run_1"))
 
     def test_yaml_points_at_same_agent_and_dataset_schema(self):
@@ -138,4 +138,4 @@ class EvaluationTests(unittest.TestCase):
             self.skipTest("setup folder not present")
         text = yml.read_text()
         self.assertIn(f'agent_name: "{self.AGENT}"', text)
-        self.assertIn('"WBR_DB.ANALYTICS_ENTERPRISE.AA_RETAIL_AGENT_EVALSET"', text)
+        self.assertIn(f'"{config.APP_SCHEMA}.AA_RETAIL_AGENT_EVALSET"', text)

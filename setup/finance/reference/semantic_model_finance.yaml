@@ -1,0 +1,119 @@
+name: keystone_consumer_banking
+description: >
+  Keystone Financial consumer bank. Card and deposit portfolio balances and
+  economics, credit risk performance, and acquisition efficiency. Credit metrics
+  apply to credit card products only; deposit metrics to deposit products only.
+tables:
+  - name: portfolio_week
+    base_table: {database: INFERA_DEMO, schema: FINANCE, table: FINANCE_FACT_PORTFOLIO_WEEK}
+    primary_key: {columns: [week_start_date, product_id, segment_id]}
+    time_dimensions:
+      - {name: week_start_date, expr: week_start_date, data_type: date}
+    dimensions:
+      - {name: product_id, expr: product_id, data_type: varchar}
+      - {name: segment_id, expr: segment_id, data_type: varchar}
+    measures:
+      - {name: ending_balance, expr: ending_balance, data_type: number, default_aggregation: sum, description: Point-in-time stock. Do not sum across weeks.}
+      - {name: purchase_volume, expr: purchase_volume, data_type: number, default_aggregation: sum}
+      - {name: interchange_revenue, expr: interchange_revenue, data_type: number, default_aggregation: sum}
+      - {name: rewards_expense, expr: rewards_expense, data_type: number, default_aggregation: sum}
+      - {name: net_interest_income, expr: net_interest_income, data_type: number, default_aggregation: sum}
+      - {name: cost_of_funds_dollars, expr: cost_of_funds_dollars, data_type: number, default_aggregation: sum}
+      - {name: new_accounts, expr: new_accounts, data_type: number, default_aggregation: sum}
+      - {name: closed_accounts, expr: closed_accounts, data_type: number, default_aggregation: sum}
+      - {name: active_accounts, expr: active_accounts, data_type: number, default_aggregation: sum}
+  - name: credit_week
+    base_table: {database: INFERA_DEMO, schema: FINANCE, table: FINANCE_FACT_CREDIT_WEEK}
+    primary_key: {columns: [week_start_date, product_id, segment_id]}
+    time_dimensions:
+      - {name: week_start_date, expr: week_start_date, data_type: date}
+    dimensions:
+      - {name: product_id, expr: product_id, data_type: varchar}
+      - {name: segment_id, expr: segment_id, data_type: varchar}
+    measures:
+      - {name: dpd_30_balance, expr: dpd_30_balance, data_type: number, default_aggregation: sum}
+      - {name: dpd_60_balance, expr: dpd_60_balance, data_type: number, default_aggregation: sum}
+      - {name: dpd_90_balance, expr: dpd_90_balance, data_type: number, default_aggregation: sum}
+      - {name: net_chargeoff_dollars, expr: net_chargeoff_dollars, data_type: number, default_aggregation: sum}
+      - {name: recovery_dollars, expr: recovery_dollars, data_type: number, default_aggregation: sum}
+  - name: deposits_week
+    base_table: {database: INFERA_DEMO, schema: FINANCE, table: FINANCE_FACT_DEPOSITS_WEEK}
+    primary_key: {columns: [week_start_date, product_id, segment_id]}
+    time_dimensions:
+      - {name: week_start_date, expr: week_start_date, data_type: date}
+    dimensions:
+      - {name: product_id, expr: product_id, data_type: varchar}
+      - {name: segment_id, expr: segment_id, data_type: varchar}
+    measures:
+      - {name: deposit_balance, expr: deposit_balance, data_type: number, default_aggregation: sum}
+      - {name: runoff_dollars, expr: runoff_dollars, data_type: number, default_aggregation: sum}
+      - {name: maturing_dollars, expr: maturing_dollars, data_type: number, default_aggregation: sum}
+      - {name: new_money_dollars, expr: new_money_dollars, data_type: number, default_aggregation: sum}
+      - {name: rate_gap_pct, expr: rate_gap_pct, data_type: number, default_aggregation: avg, description: competitor_rate minus rate_paid. POSITIVE means competitors pay more and balances are at risk.}
+  - name: dim_product
+    base_table: {database: INFERA_DEMO, schema: FINANCE, table: FINANCE_DIM_PRODUCT}
+    primary_key: {columns: [product_id]}
+    dimensions:
+      - {name: product_id, expr: product_id, data_type: varchar}
+      - {name: product_name, expr: product_name, data_type: varchar}
+      - {name: product_type, expr: product_type, data_type: varchar}
+      - {name: tier, expr: tier, data_type: varchar}
+  - name: dim_segment
+    base_table: {database: INFERA_DEMO, schema: FINANCE, table: FINANCE_DIM_SEGMENT}
+    primary_key: {columns: [segment_id]}
+    dimensions:
+      - {name: segment_id, expr: segment_id, data_type: varchar}
+      - {name: segment_name, expr: segment_name, data_type: varchar}
+    measures:
+      - {name: avg_fico, expr: avg_fico, data_type: number, default_aggregation: avg}
+relationships:
+  - name: portfolio_to_product
+    left_table: portfolio_week
+    right_table: dim_product
+    relationship_columns: [{left_column: product_id, right_column: product_id}]
+    join_type: left_outer
+    relationship_type: many_to_one
+  - name: portfolio_to_segment
+    left_table: portfolio_week
+    right_table: dim_segment
+    relationship_columns: [{left_column: segment_id, right_column: segment_id}]
+    join_type: left_outer
+    relationship_type: many_to_one
+  - name: credit_to_segment
+    left_table: credit_week
+    right_table: dim_segment
+    relationship_columns: [{left_column: segment_id, right_column: segment_id}]
+    join_type: left_outer
+    relationship_type: many_to_one
+  - name: deposits_to_segment
+    left_table: deposits_week
+    right_table: dim_segment
+    relationship_columns: [{left_column: segment_id, right_column: segment_id}]
+    join_type: left_outer
+    relationship_type: many_to_one
+metrics:
+  - name: rewards_to_interchange_ratio
+    expr: SUM(rewards_expense) / NULLIF(SUM(interchange_revenue), 0)
+    description: Above 0.85 is a profitability breach.
+  - name: delinquency_rate_pct
+    expr: SUM(dpd_30_balance) / NULLIF(SUM(ending_balance), 0) * 100
+  - name: net_chargeoffs
+    expr: SUM(net_chargeoff_dollars)
+  - name: recovery_rate_pct
+    expr: SUM(recovery_dollars) / NULLIF(SUM(net_chargeoff_dollars) + SUM(recovery_dollars), 0) * 100
+  - name: deposit_runoff_rate_pct
+    expr: SUM(runoff_dollars) / NULLIF(SUM(deposit_balance), 0) * 100 * 52
+  - name: net_new_money
+    expr: SUM(new_money_dollars) - SUM(runoff_dollars)
+verified_queries:
+  - name: deposit runoff with rate gap by segment
+    question: Which segments are losing balances fastest and what is their rate gap?
+    sql: >
+      SELECT s.segment_name,
+             SUM(d.runoff_dollars) AS runoff,
+             AVG(d.rate_gap_pct)   AS avg_rate_gap_pct,
+             SUM(d.deposit_balance) AS balance
+      FROM FINANCE_FACT_DEPOSITS_WEEK d
+      JOIN FINANCE_DIM_SEGMENT s ON d.segment_id = s.segment_id
+      WHERE d.week_start_date >= DATEADD(week,-13,CURRENT_DATE)
+      GROUP BY 1 ORDER BY runoff DESC

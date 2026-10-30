@@ -1,5 +1,7 @@
 # Analytics Accelerator — Enterprise Edition (Snowflake demo: Thu 8 Oct 2026)
 
+> **Historical (kept for reference):** the October demo plan. For the current state read README.md, ENTERPRISE_TRACKER.md (section R), MULTI_DOMAIN_PLAN.md and ARCHITECTURE.md (updated 23 Oct 2026).
+
 Owner: Sharath · Built with Claude · status as of 1 Oct 2026
 
 ## What this is

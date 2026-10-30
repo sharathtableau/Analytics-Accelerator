@@ -1,0 +1,109 @@
+name: apex_athletic_cpg
+description: >
+  Apex Athletic branded apparel. Sell-in (shipments booked as revenue) versus
+  sell-through (consumer purchases at retail partners), trade promotion returns
+  and channel inventory health. The core analysis is divergence between the two.
+tables:
+  - name: sellin_week
+    base_table: {database: INFERA_DEMO, schema: CPG, table: CPG_FACT_SELLIN_WEEK}
+    primary_key: {columns: [week_start_date, customer_id, product_id]}
+    time_dimensions:
+      - {name: week_start_date, expr: week_start_date, data_type: date}
+    dimensions:
+      - {name: customer_id, expr: customer_id, data_type: varchar}
+      - {name: product_id, expr: product_id, data_type: varchar}
+      - {name: promo_flag, expr: promo_flag, data_type: number}
+    measures:
+      - {name: shipped_units, expr: shipped_units, data_type: number, default_aggregation: sum}
+      - {name: gross_sales, expr: gross_sales, data_type: number, default_aggregation: sum}
+      - {name: trade_spend, expr: trade_spend, data_type: number, default_aggregation: sum}
+      - {name: net_sales, expr: net_sales, data_type: number, default_aggregation: sum}
+      - {name: return_dollars, expr: return_dollars, data_type: number, default_aggregation: sum}
+  - name: sellthrough_week
+    base_table: {database: INFERA_DEMO, schema: CPG, table: CPG_FACT_SELLTHROUGH_WEEK}
+    primary_key: {columns: [week_start_date, customer_id, product_id]}
+    time_dimensions:
+      - {name: week_start_date, expr: week_start_date, data_type: date}
+    dimensions:
+      - {name: customer_id, expr: customer_id, data_type: varchar}
+      - {name: product_id, expr: product_id, data_type: varchar}
+    measures:
+      - {name: pos_units, expr: pos_units, data_type: number, default_aggregation: sum}
+      - {name: pos_dollars, expr: pos_dollars, data_type: number, default_aggregation: sum}
+      - {name: retailer_on_hand_units, expr: retailer_on_hand_units, data_type: number, default_aggregation: sum}
+      - {name: weeks_of_supply, expr: weeks_of_supply, data_type: number, default_aggregation: avg}
+      - {name: acv_distribution_pct, expr: acv_distribution_pct, data_type: number, default_aggregation: avg}
+  - name: dim_customer
+    base_table: {database: INFERA_DEMO, schema: CPG, table: CPG_DIM_CUSTOMER}
+    primary_key: {columns: [customer_id]}
+    dimensions:
+      - {name: customer_id, expr: customer_id, data_type: varchar}
+      - {name: customer_name, expr: customer_name, data_type: varchar}
+      - {name: channel, expr: channel, data_type: varchar, description: Wholesale or DTC. Exclude DTC from channel inventory analysis.}
+      - {name: region_scope, expr: region_scope, data_type: varchar}
+  - name: dim_product
+    base_table: {database: INFERA_DEMO, schema: CPG, table: CPG_DIM_PRODUCT}
+    primary_key: {columns: [product_id]}
+    dimensions:
+      - {name: product_id, expr: product_id, data_type: varchar}
+      - {name: product_name, expr: product_name, data_type: varchar}
+      - {name: product_category, expr: product_category, data_type: varchar}
+      - {name: gender_segment, expr: gender_segment, data_type: varchar}
+relationships:
+  - name: sellin_to_customer
+    left_table: sellin_week
+    right_table: dim_customer
+    relationship_columns: [{left_column: customer_id, right_column: customer_id}]
+    join_type: left_outer
+    relationship_type: many_to_one
+  - name: sellin_to_product
+    left_table: sellin_week
+    right_table: dim_product
+    relationship_columns: [{left_column: product_id, right_column: product_id}]
+    join_type: left_outer
+    relationship_type: many_to_one
+  - name: sellthrough_to_customer
+    left_table: sellthrough_week
+    right_table: dim_customer
+    relationship_columns: [{left_column: customer_id, right_column: customer_id}]
+    join_type: left_outer
+    relationship_type: many_to_one
+  - name: sellthrough_to_product
+    left_table: sellthrough_week
+    right_table: dim_product
+    relationship_columns: [{left_column: product_id, right_column: product_id}]
+    join_type: left_outer
+    relationship_type: many_to_one
+metrics:
+  - name: trade_spend_rate_pct
+    expr: SUM(trade_spend) / NULLIF(SUM(gross_sales), 0) * 100
+  - name: gross_margin_pct
+    expr: SUM(net_sales * gross_margin_pct) / NULLIF(SUM(net_sales), 0)
+    description: Net-sales-weighted. Never average the raw column.
+  - name: returns_rate_pct
+    expr: SUM(return_dollars) / NULLIF(SUM(gross_sales), 0) * 100
+  - name: avg_selling_price
+    expr: SUM(gross_sales) / NULLIF(SUM(shipped_units), 0)
+verified_queries:
+  - name: sell-in versus sell-through divergence
+    question: Which accounts have sell-in growing while sell-through declines?
+    sql: >
+      WITH si AS (
+        SELECT customer_id,
+          SUM(CASE WHEN week_start_date >= DATEADD(week,-13,CURRENT_DATE) THEN shipped_units END) AS r,
+          SUM(CASE WHEN week_start_date <  DATEADD(week,-13,CURRENT_DATE)
+               AND week_start_date >= DATEADD(week,-26,CURRENT_DATE) THEN shipped_units END) AS p
+        FROM CPG_FACT_SELLIN_WEEK GROUP BY 1),
+      st AS (
+        SELECT customer_id,
+          SUM(CASE WHEN week_start_date >= DATEADD(week,-13,CURRENT_DATE) THEN pos_units END) AS r,
+          SUM(CASE WHEN week_start_date <  DATEADD(week,-13,CURRENT_DATE)
+               AND week_start_date >= DATEADD(week,-26,CURRENT_DATE) THEN pos_units END) AS p
+        FROM CPG_FACT_SELLTHROUGH_WEEK GROUP BY 1)
+      SELECT c.customer_name,
+             (si.r/NULLIF(si.p,0)-1)*100 AS sellin_growth_pct,
+             (st.r/NULLIF(st.p,0)-1)*100 AS sellthrough_growth_pct
+      FROM si JOIN st USING (customer_id)
+      JOIN CPG_DIM_CUSTOMER c USING (customer_id)
+      WHERE c.channel = 'Wholesale'
+      ORDER BY sellin_growth_pct - sellthrough_growth_pct DESC

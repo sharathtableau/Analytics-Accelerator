@@ -1,0 +1,11 @@
+customer_id,customer_name,channel,region_scope,revenue_mix_pct,payment_terms_days
+CUS-01,National Sporting Chain,Wholesale,National,19.0,45
+CUS-02,Mass Retail Partner,Wholesale,National,16.0,30
+CUS-03,Department Store Group,Wholesale,National,11.0,45
+CUS-04,Specialty Run Network,Wholesale,Regional,7.0,60
+CUS-05,Off-Price Channel,Wholesale,National,8.0,45
+CUS-06,Team Dealer Network,Wholesale,Regional,5.0,60
+CUS-07,Pure-Play Ecommerce,Wholesale,Digital,9.0,30
+CUS-08,International Distributor,Wholesale,Intl,6.0,30
+CUS-09,Apex.com DTC,DTC,Digital,13.0,0
+CUS-10,Apex Owned Retail,DTC,Owned,6.0,0

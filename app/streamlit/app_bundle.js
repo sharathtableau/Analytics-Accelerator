@@ -6381,7 +6381,7 @@ function sp({ value: e, target: t, good: n }) {
     s != null && /* @__PURE__ */ l.jsx("s", { style: { left: `calc(${o(s)}% - 1px)` } })
   ] });
 }
-const Qs = /RETURN|STOCKOUT|DELIVERY_DAYS|TRANSIT|CLICK_TO_SHIP|DISCOUNT|LOST|COST|COGS|WEEKS_OF_SUPPLY/i;
+const Qs = /RETURN|STOCKOUT|DELIVERY_DAYS|TRANSIT|CLICK_TO_SHIP|DISCOUNT|LOST|COST|COGS|WEEKS_OF_SUPPLY|DELINQUEN|LOSS_RATE|LOSSES|CHARGE_?OFF|DPD_|RATE_GAP|RUNOFF|ATTRITION|CLOSED_ACCOUNTS|OFF_PRICE|REWARDS_TO|TRADE_SPEND_RATE/i;
 function Wo({ data: e, ctx: t, spec: n }) {
   const s = (n == null ? void 0 : n.show_trend) !== !1;
   return /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
@@ -6606,6 +6606,7 @@ function up({ data: e }) {
   }) });
 }
 function Ho({ data: e }) {
+  if (e.diverge) return /* @__PURE__ */ l.jsx(HmX, { data: e });
   return /* @__PURE__ */ l.jsx(
     dd,
     {
@@ -6648,6 +6649,7 @@ function dp({ data: e }) {
   ] });
 }
 function hp({ data: e, ctx: t }) {
+  if (e.reference_y || e.group_label) return /* @__PURE__ */ l.jsx(ScX, { data: e });
   return /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
     /* @__PURE__ */ l.jsxs("div", { className: "sub", children: [
       "Each point = one ",
@@ -7244,7 +7246,305 @@ function ThmPanel({ data: e, send: t, pending: n }) {
     /* @__PURE__ */ l.jsx(ThmForm, { data: e, send: t, pending: n })
   ] });
 }
+/* ---- Chart drop B (22 Oct): analysis tiles. One story per chart: the mover highlighted, the rest grey; changes vs
+   the same weeks last year as diverging bars; distribution vs velocity; ageing stacks; gross-to-net; reference lines
+   and healthy bands drawn on the chart. Colours come from theme tokens. ---- */
+const aaChg = (v, k) => v == null ? "—" : k === "percent" ? `${v > 0 ? "+" : ""}${(v * 100).toFixed(Math.abs(v) < 1e-3 ? 2 : 1)} pts` : k === "index" ? `${v > 0 ? "+" : ""}${v.toFixed(0)} pts` : `${v > 0 ? "+" : ""}${(v * 100).toFixed(Math.abs(v) < 0.1 ? 1 : 0)}%`;
+const aaVal = (v, k) => v == null ? "—" : k === "index" ? v.toFixed(0) : k === "percent" && v !== 0 && Math.abs(v) < 0.01 ? `${(v * 100).toFixed(2)}%` : k === "number" && Math.abs(v) < 100 && !Number.isInteger(v) ? v.toFixed(1) : O(v, k);
+const aaSigned = (v, k) => v == null ? "—" : (v > 0 ? "+" : "") + O(v, k);
+function aaShort(names) {
+  const first = names.map((n) => String(n).split(" ")[0]);
+  const drop = names.length > 2 && first.every((f) => f === first[0]) && names.every((n) => String(n).split(" ").length > 1);
+  return (n) => drop ? String(n).slice(first[0].length + 1) : String(n);
+}
+const aaFit = (t, px, size = 12) => { const max = Math.max(4, Math.floor(px / (size * 0.56))); return t.length > max ? t.slice(0, max - 1) + "…" : t; };
+function aaSpread(ys, gap) {
+  const idx = ys.map((y, i) => i).sort((a, b) => ys[a] - ys[b]), out = [...ys];
+  for (let k = 1; k < idx.length; k++) {
+    const i = idx[k], j = idx[k - 1];
+    out[i] - out[j] < gap && (out[i] = out[j] + gap);
+  }
+  return out;
+}
+function AaSub({ parts }) {
+  const p = parts.filter(Boolean);
+  return p.length ? /* @__PURE__ */ l.jsx("div", { className: "sub", children: p.join(" · ") }) : null;
+}
+function AaLegend({ items }) {
+  return /* @__PURE__ */ l.jsx("div", { className: "aa-legend", children: items.filter(Boolean).map(([c, t, cls], i) => /* @__PURE__ */ l.jsxs("span", { className: cls || "", children: [/* @__PURE__ */ l.jsx("i", { style: { background: c } }), t] }, i)) });
+}
+// ---------------------------------------------------------------- outlier lines
+function OlX({ data: e }) {
+  const [s, w] = tn(), [hv, setHv] = P.useState(null), [tip, show, hide] = Ke(s);
+  const ser = e.series || [];
+  if (!ser.length || !ser[0].points.length) return /* @__PURE__ */ l.jsx("div", { ref: s, children: /* @__PURE__ */ l.jsx(Dt, { text: "No data." }) });
+  const k = e.kind, pts0 = ser[0].points, n = pts0.length, H = 268, labW = Math.min(170, Math.max(110, w * 0.26)), m = { l: 52, r: labW, t: 14, b: 26 };
+  const W = Math.max(80, w - m.l - m.r), IH = H - m.t - m.b;
+  const vals = ser.flatMap((x) => x.points.map((p) => p.value)).filter((v) => v != null);
+  e.reference && vals.push(e.reference.value);
+  e.band && vals.push(e.band[0], e.band[1]);
+  const lo0 = Math.min(...vals), hi0 = Math.max(...vals), pad = (hi0 - lo0 || Math.abs(hi0) || 1) * 0.08, ticks = zn(lo0 >= 0 ? Math.max(0, lo0 - pad) : lo0 - pad, hi0 + pad, 4), y0 = ticks[0], y1 = ticks[ticks.length - 1];
+  const X = (i) => m.l + (n <= 1 ? W / 2 : i * W / (n - 1)), Y = (v) => m.t + IH - (v - y0) / (y1 - y0 || 1) * IH;
+  const anyHl = ser.some((x) => x.highlight), few = !anyHl && ser.length <= 6, short = aaShort(ser.map((x) => x.name));
+  const colour = (x, i) => x.highlight ? "var(--ol-hl, var(--c3, #E8830C))" : few ? Hl[i % Hl.length] : "var(--ol-grey, #b7c0cc)";
+  const path = (x) => x.points.map((p, i) => p.value == null ? null : `${X(i)},${Y(p.value)}`).filter(Boolean).map((q, i) => (i ? "L" : "M") + q).join(" ");
+  const last = (x) => [...x.points].reverse().find((p) => p.value != null);
+  const order = ser.map((x, i) => i), ends = order.map((i) => last(ser[i]) ? Y(last(ser[i]).value) : m.t), ly = aaSpread(ends, 13);
+  const step = Math.max(1, Math.ceil(n / Math.max(3, Math.floor(W / 80))));
+  const drawOrder = [...order].sort((a, b) => (ser[a].highlight ? 1 : 0) - (ser[b].highlight ? 1 : 0));
+  const tipFor = (i) => /* @__PURE__ */ l.jsx(Ie, { title: pts0[i].label, rows: [...ser].map((x) => [x.name, x.points[i] ? x.points[i].value : null, x.highlight]).filter((r) => r[1] != null).sort((a, b) => b[1] - a[1]).slice(0, 9).map(([nm, v, h]) => [nm, aaVal(v, k), h ? "hl" : ""]) });
+  return /* @__PURE__ */ l.jsxs("div", { className: "chart ol", ref: s, children: [
+    /* @__PURE__ */ l.jsx(AaSub, { parts: [e.dimension_label + (e.index ? " · index, start of chart = 100" : ""), e.span_label + (e.smooth ? ` (${e.smooth}-week average)` : ""), e.filter_note] }),
+    /* @__PURE__ */ l.jsxs("svg", { viewBox: `0 0 ${w} ${H}`, role: "img", "aria-label": `${e.metric_label} by ${e.dimension_label}`, onMouseLeave: () => { setHv(null), hide(); }, children: [
+      e.band && /* @__PURE__ */ l.jsxs("g", { className: "ol-band", children: [
+        /* @__PURE__ */ l.jsx("rect", { x: m.l, width: W, y: Y(e.band[1]), height: Math.max(0, Y(e.band[0]) - Y(e.band[1])) }),
+        /* @__PURE__ */ l.jsx("text", { x: m.l + 6, y: Y(e.band[1]) + 13, className: "tick", children: `healthy ${aaVal(e.band[0], k)}–${aaVal(e.band[1], k)}` })
+      ] }),
+      ticks.map((v) => /* @__PURE__ */ l.jsxs("g", { children: [
+        /* @__PURE__ */ l.jsx("line", { x1: m.l, x2: m.l + W, y1: Y(v), y2: Y(v), className: "grid" }),
+        /* @__PURE__ */ l.jsx("text", { x: m.l - 8, y: Y(v) + 4, className: "tick", textAnchor: "end", children: aaVal(v, k) })
+      ] }, "t" + v)),
+      pts0.map((p, i) => (n - 1 - i) % step === 0 && i >= step / 2 ? /* @__PURE__ */ l.jsx("text", { x: X(i), y: H - 8, className: "tick", textAnchor: i === n - 1 ? "end" : "middle", children: p.label.replace("Wk of ", "").replace(/^(\d+ \w+) (\d\d)(\d\d)$/, "$1 ’$3") }, "x" + i) : null),
+      e.reference && /* @__PURE__ */ l.jsxs("g", { className: "ol-ref", children: [
+        /* @__PURE__ */ l.jsx("line", { x1: m.l, x2: m.l + W, y1: Y(e.reference.value), y2: Y(e.reference.value) }),
+        /* @__PURE__ */ l.jsx("text", { x: m.l + 6, y: Y(e.reference.value) - 5, children: `${e.reference.label || "line"} ${aaVal(e.reference.value, k)}` })
+      ] }),
+      drawOrder.map((i) => /* @__PURE__ */ l.jsx("path", { d: path(ser[i]), className: `ol-line ${ser[i].highlight ? "hl" : ""}`, style: { stroke: colour(ser[i], i) } }, "p" + i)),
+      order.map((i) => {
+        const x = ser[i], p = last(x);
+        if (!p) return null;
+        return /* @__PURE__ */ l.jsxs("g", { className: `ol-end ${x.highlight ? "hl" : ""}`, children: [
+          /* @__PURE__ */ l.jsx("circle", { cx: X(x.points.indexOf(p)), cy: Y(p.value), r: x.highlight ? 4 : 2.5, style: { fill: colour(x, i) } }),
+          /* @__PURE__ */ l.jsx("text", { x: m.l + W + 8, y: ly[i] + 4, style: x.highlight || few ? { fill: x.highlight ? "var(--ink)" : colour(x, i) } : null, children: x.highlight ? aaFit(short(x.name), labW - 60, 11.5) + "  " + aaVal(p.value, k) : aaFit(short(x.name), labW - 12, 11.5) })
+        ] }, "e" + i);
+      }),
+      hv != null && /* @__PURE__ */ l.jsx("line", { x1: X(hv), x2: X(hv), y1: m.t, y2: m.t + IH, className: "ol-cross" }),
+      /* @__PURE__ */ l.jsx("rect", { x: m.l, y: m.t, width: W, height: IH, fill: "transparent", onMouseMove: (ev) => {
+        const r = ev.currentTarget.getBoundingClientRect(), i = Math.max(0, Math.min(n - 1, Math.round((ev.clientX - r.left) / (r.width || 1) * (n - 1))));
+        setHv(i), show(ev, tipFor(i));
+      } })
+    ] }),
+    tip
+  ] });
+}
+// ---------------------------------------------------------------- change bars / dots / driver split
+function ChX({ data: e }) {
+  const [s, w] = tn(), [tip, show, hide] = Ke(s);
+  const rows = e.rows || [];
+  if (!rows.length) return /* @__PURE__ */ l.jsx("div", { ref: s, children: /* @__PURE__ */ l.jsx(Dt, { text: "No data." }) });
+  const level = e.mode === "level", dots = e.display === "dots", down = e.better === "down", k = e.kind;
+  const ref = level ? (e.reference ? e.reference.value : 0) : 0;
+  const v = (r) => level ? r.current : r.change, ck = level ? k : (e.unit === "pts" ? "percent" : "number");
+  const worse = (r) => e.neutral ? false : r.total ? false : dots ? ((r.current - r.base) * (down ? 1 : -1) > 0) : ((v(r) - ref) * (down ? 1 : -1) > 0);
+  const labW = Math.min(190, Math.max(96, w * 0.32)), noteW = e.metric2_label ? 104 : 0, rowH = 27, m = { l: labW, r: 64 + noteW, t: 8, b: 22 };
+  const W = Math.max(80, w - m.l - m.r), H = m.t + rows.length * rowH + m.b;
+  const xs = dots ? rows.flatMap((r) => [r.current, r.base]).filter((x) => x != null) : rows.map(v).filter((x) => x != null).concat([ref]);
+  let lo = Math.min(...xs), hi = Math.max(...xs);
+  if (!dots) { lo = Math.min(lo, ref), hi = Math.max(hi, ref); }
+  const pad = (hi - lo || Math.abs(hi) || 1) * 0.06, tk = zn(lo - (dots ? pad : 0), hi + (dots ? pad : 0), 4), x0 = tk[0], x1 = tk[tk.length - 1];
+  const X = (x) => m.l + (x - x0) / (x1 - x0 || 1) * W;
+  const fmtV = (x) => level || dots ? aaVal(x, k) : aaChg(x, ck);
+  const cls = (r) => r.total ? "cb-total" : e.neutral ? "cb-neutral" : worse(r) ? "cb-bad" : "cb-good";
+  const short = aaShort(rows.map((r) => r.segment));
+  return /* @__PURE__ */ l.jsxs("div", { className: "chart cb", ref: s, children: [
+    /* @__PURE__ */ l.jsx(AaSub, { parts: [level ? `${e.current_label}` : `${e.current_label} vs ${e.base_label}`, level && e.reference && (e.reference.label || "line") + " at " + aaVal(ref, k), dots && `● now  ○ ${e.base_label}`, e.filter_note, e.multiplies === !1 && "drivers shown side by side"] }),
+    /* @__PURE__ */ l.jsxs("svg", { viewBox: `0 0 ${w} ${H}`, role: "img", "aria-label": e.metric_label, onMouseLeave: hide, children: [
+      tk.map((x) => /* @__PURE__ */ l.jsxs("g", { children: [
+        /* @__PURE__ */ l.jsx("line", { x1: X(x), x2: X(x), y1: m.t, y2: H - m.b, className: "grid" }),
+        /* @__PURE__ */ l.jsx("text", { x: X(x), y: H - 6, className: "tick", textAnchor: "middle", children: dots || level ? aaVal(x, k) : aaChg(x, ck) })
+      ] }, "g" + x)),
+      !dots && /* @__PURE__ */ l.jsx("line", { x1: X(ref), x2: X(ref), y1: m.t - 2, y2: H - m.b, className: `cb-zero ${level && e.reference && e.reference.value ? "ref" : ""}` }),
+      rows.map((r, i) => {
+        const y = m.t + i * rowH, cy = y + rowH / 2, val = v(r), a = X(ref), b = X(val ?? ref);
+        const tipRows = [
+          [level ? e.metric_label : e.current_label, aaVal(r.current, r.kind || k)],
+          !level && [e.base_label, aaVal(r.base, r.kind || k)],
+          !level && ["Change", aaChg(r.change, ck)],
+          e.metric2_label && [e.metric2_label + " change", aaChg(r.m2_change, e.metric2_kind)]
+        ];
+        return /* @__PURE__ */ l.jsxs("g", { className: `cb-row ${r.total ? "total" : ""}`, onMouseMove: (ev) => show(ev, /* @__PURE__ */ l.jsx(Ie, { title: r.segment, rows: tipRows })), children: [
+          /* @__PURE__ */ l.jsx("rect", { x: 0, y, width: w, height: rowH, className: "cb-hit" }),
+          /* @__PURE__ */ l.jsx("text", { x: m.l - 10, y: cy + 4, className: `cb-label ${r.total ? "b" : ""}`, textAnchor: "end", children: aaFit(short(r.segment), labW - 16) }),
+          dots ? /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+            /* @__PURE__ */ l.jsx("line", { x1: X(r.base), x2: X(r.current), y1: cy, y2: cy, className: "cb-link" }),
+            /* @__PURE__ */ l.jsx("circle", { cx: X(r.base), cy, r: 4.5, className: "cb-then" }),
+            /* @__PURE__ */ l.jsx("circle", { cx: X(r.current), cy, r: 6, className: `cb-now ${cls(r)}` }),
+            /* @__PURE__ */ l.jsx("text", { x: X(x1) + 8, y: cy + 4, className: `cb-val ${cls(r)}`, children: `${aaVal(r.current, k)} (${aaChg(r.change, k === "percent" ? "percent" : "number")})` })
+          ] }) : /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+            /* @__PURE__ */ l.jsx("rect", { x: Math.min(a, b), width: Math.max(1.5, Math.abs(b - a)), y: y + 6, height: rowH - 12, rx: 3, className: cls(r) }),
+            (() => {
+              const pos = (val ?? ref) >= ref, inside = Math.abs(b - a) > 64 && (pos ? b + 60 > m.l + W : b - 60 < m.l);
+              return /* @__PURE__ */ l.jsx("text", { x: inside ? (pos ? b - 6 : b + 6) : pos ? b + 6 : b - 6, y: cy + 4, className: `cb-val ${inside ? "in" : cls(r)}`, textAnchor: pos !== inside ? "start" : "end", children: fmtV(val) });
+            })()
+          ] }),
+          e.metric2_label && /* @__PURE__ */ l.jsx("text", { x: w - 4, y: cy + 4, textAnchor: "end", className: `cb-note ${r.m2_change != null && r.m2_change < -0.05 ? "bad" : ""}`, children: r.m2_change == null ? "" : aaChg(r.m2_change, e.metric2_kind) })
+        ] }, r.segment);
+      }),
+      e.metric2_label && /* @__PURE__ */ l.jsx("text", { x: w - 4, y: H - 6, textAnchor: "end", className: "tick", children: e.metric2_label.toLowerCase() + " change" })
+    ] }),
+    tip
+  ] });
+}
+// ---------------------------------------------------------------- distribution vs velocity
+function VsX({ data: e }) {
+  const [s, w] = tn(), [tip, show, hide] = Ke(s), k = e.kind, rows = e.rows || [];
+  if (!rows.length) return /* @__PURE__ */ l.jsx("div", { ref: s, children: /* @__PURE__ */ l.jsx(Dt, { text: "No data." }) });
+  const labW = Math.min(180, Math.max(96, w * 0.3)), rowH = 26, m = { l: labW, r: 58, t: 6, b: 22 }, W = Math.max(80, w - m.l - m.r), H = m.t + rows.length * rowH + m.b;
+  const ends = rows.flatMap((r) => [r.distribution_effect, r.velocity_effect, r.total_effect, r.distribution_effect + r.velocity_effect, 0]);
+  const tk = zn(Math.min(...ends), Math.max(...ends), 4), x0 = tk[0], x1 = tk[tk.length - 1], X = (x) => m.l + (x - x0) / (x1 - x0 || 1) * W;
+  return /* @__PURE__ */ l.jsxs("div", { className: "chart vs", ref: s, children: [
+    /* @__PURE__ */ l.jsx(AaSub, { parts: [`${e.metric_label} change, ${e.current_label} vs ${e.base_label}`, e.filter_note] }),
+    /* @__PURE__ */ l.jsx(AaLegend, { items: [["var(--vs-dist, var(--c4, #11A39A))", "distribution (stores carrying it)"], ["var(--vs-vel, var(--c1, #11629E))", "velocity (sales per point of distribution)"]] }),
+    /* @__PURE__ */ l.jsxs("svg", { viewBox: `0 0 ${w} ${H}`, role: "img", "aria-label": "Distribution vs velocity", onMouseLeave: hide, children: [
+      tk.map((x) => /* @__PURE__ */ l.jsxs("g", { children: [
+        /* @__PURE__ */ l.jsx("line", { x1: X(x), x2: X(x), y1: m.t, y2: H - m.b, className: "grid" }),
+        /* @__PURE__ */ l.jsx("text", { x: X(x), y: H - 6, className: "tick", textAnchor: "middle", children: O(x, k) })
+      ] }, "g" + x)),
+      /* @__PURE__ */ l.jsx("line", { x1: X(0), x2: X(0), y1: m.t, y2: H - m.b, className: "cb-zero" }),
+      rows.map((r, i) => {
+        const y = m.t + i * rowH, d = r.distribution_effect, v = r.velocity_effect, same = d * v >= 0, vStart = same ? d : 0, tot = r.total_effect;
+        return /* @__PURE__ */ l.jsxs("g", { onMouseMove: (ev) => show(ev, /* @__PURE__ */ l.jsx(Ie, { title: r.segment, rows: [["Change", `${aaSigned(tot, k)} (${aaChg(r.change, "number")})`], ["Distribution effect", aaSigned(d, k)], ["Velocity effect", aaSigned(v, k)], [e.metric2_label, `${aaVal(r.acv_before, "percent")} → ${aaVal(r.acv_now, "percent")}`]] })), children: [
+          /* @__PURE__ */ l.jsx("rect", { x: 0, y, width: w, height: rowH, className: "cb-hit" }),
+          /* @__PURE__ */ l.jsx("text", { x: m.l - 10, y: y + rowH / 2 + 4, className: "cb-label", textAnchor: "end", children: aaFit(r.segment, labW - 16) }),
+          /* @__PURE__ */ l.jsx("rect", { x: Math.min(X(0), X(d)), width: Math.max(1, Math.abs(X(d) - X(0))), y: y + 6, height: rowH - 12, className: "vs-dist" }),
+          /* @__PURE__ */ l.jsx("rect", { x: Math.min(X(vStart), X(vStart + v)), width: Math.max(1, Math.abs(X(vStart + v) - X(vStart))), y: y + 6, height: rowH - 12, className: "vs-vel" }),
+          (() => {
+            const lo = X(Math.min(d + v, d, 0, vStart + v)), hi = X(Math.max(d + v, d, 0, vStart + v)), inside = tot < 0 && lo - 56 < m.l && X(0) - lo > 60;
+            return /* @__PURE__ */ l.jsx("text", { x: tot >= 0 ? hi + 6 : inside ? lo + 6 : lo - 6, y: y + rowH / 2 + 4, textAnchor: tot >= 0 || inside ? "start" : "end", className: `cb-val ${inside ? "in" : tot < 0 ? "cb-bad" : ""}`, children: aaChg(r.change, "number") });
+          })()
+        ] }, r.segment);
+      })
+    ] }),
+    tip
+  ] });
+}
+// ---------------------------------------------------------------- stacked trend (ageing)
+function StX({ data: e }) {
+  const [s, w] = tn(), [tip, show, hide] = Ke(s), k = e.kind, bars = e.bars || [], names = e.series_names || [];
+  if (!bars.length) return /* @__PURE__ */ l.jsx("div", { ref: s, children: /* @__PURE__ */ l.jsx(Dt, { text: "No data." }) });
+  const shades = ["var(--st-1, var(--h3, #9cc3e8))", "var(--st-2, var(--h5, #3f86c8))", "var(--st-3, var(--h7, #0d3b6b))", "var(--st-4, #071f3a)"];
+  const H = 250, m = { l: 56, r: 12, t: 14, b: 26 }, W = Math.max(80, w - m.l - m.r), IH = H - m.t - m.b, n = bars.length, bw = W / n;
+  const tk = zn(0, Math.max(...bars.map((b) => b.total)) * 1.08, 4), y1 = tk[tk.length - 1], Y = (v) => m.t + IH - v / (y1 || 1) * IH;
+  const step = Math.max(1, Math.ceil(n / Math.max(3, Math.floor(W / 70))));
+  return /* @__PURE__ */ l.jsxs("div", { className: "chart st", ref: s, children: [
+    /* @__PURE__ */ l.jsx(AaSub, { parts: [e.focus ? `${e.focus}: the ${(e.focus_label || "").toLowerCase()} whose ${(e.focus_metric || "").toLowerCase()} rose most` : "All", "every 4 weeks", e.filter_note] }),
+    /* @__PURE__ */ l.jsx(AaLegend, { items: names.map((nm, i) => [shades[i % shades.length], nm]) }),
+    /* @__PURE__ */ l.jsxs("svg", { viewBox: `0 0 ${w} ${H}`, role: "img", "aria-label": e.metric_label, onMouseLeave: hide, children: [
+      tk.map((v) => /* @__PURE__ */ l.jsxs("g", { children: [
+        /* @__PURE__ */ l.jsx("line", { x1: m.l, x2: m.l + W, y1: Y(v), y2: Y(v), className: "grid" }),
+        /* @__PURE__ */ l.jsx("text", { x: m.l - 8, y: Y(v) + 4, className: "tick", textAnchor: "end", children: O(v, k) })
+      ] }, "t" + v)),
+      bars.map((b, i) => {
+        let acc = 0;
+        return /* @__PURE__ */ l.jsxs("g", { onMouseMove: (ev) => show(ev, /* @__PURE__ */ l.jsx(Ie, { title: b.label, rows: [...names.map((nm, j) => [nm, O(b.values[j], k)]), ["Total", O(b.total, k)]] })), children: [
+          b.values.map((v, j) => {
+            const y = Y(acc + v), h = Y(acc) - y;
+            acc += v;
+            return /* @__PURE__ */ l.jsx("rect", { x: m.l + i * bw + bw * 0.16, width: bw * 0.68, y, height: Math.max(0, h), style: { fill: shades[j % shades.length] }, className: "st-seg" }, j);
+          }),
+          (i % step === 0 || i === n - 1) && /* @__PURE__ */ l.jsx("text", { x: m.l + i * bw + bw / 2, y: H - 8, className: "tick", textAnchor: "middle", children: b.label.replace("Wk of ", "").replace(/ 20\d\d$/, "") }),
+          i === n - 1 && /* @__PURE__ */ l.jsx("text", { x: m.l + i * bw + bw / 2, y: Y(b.total) - 5, className: "st-total", textAnchor: "middle", children: O(b.total, k) })
+        ] }, b.period);
+      })
+    ] }),
+    tip
+  ] });
+}
+// ---------------------------------------------------------------- metric waterfall (gross-to-net)
+function WfX({ data: e }) {
+  const [s, w] = tn(), [tip, show, hide] = Ke(s), k = e.kind, st = e.steps || [];
+  if (!st.length) return /* @__PURE__ */ l.jsx("div", { ref: s, children: /* @__PURE__ */ l.jsx(Dt, { text: "No data." }) });
+  const H = 250, m = { l: 12, r: 12, t: 22, b: 40 }, W = Math.max(80, w - m.l - m.r), IH = H - m.t - m.b, n = st.length, bw = W / n;
+  const top = Math.max(...st.map((x) => x.kind === "start" || x.kind === "end" ? x.value : (x.base || 0) + Math.max(0, x.value))), Y = (v) => m.t + IH - v / (top * 1.05 || 1) * IH;
+  const start = st[0].value;
+  return /* @__PURE__ */ l.jsxs("div", { className: "chart wf", ref: s, children: [
+    /* @__PURE__ */ l.jsx(AaSub, { parts: [e.period_label, e.filter_note] }),
+    /* @__PURE__ */ l.jsxs("svg", { viewBox: `0 0 ${w} ${H}`, role: "img", "aria-label": "Waterfall", onMouseLeave: hide, children: [
+      st.map((x, i) => {
+        const full = x.kind === "start" || x.kind === "end", a = full ? 0 : x.base, b = full ? x.value : x.base + x.value, y = Y(Math.max(a, b)), h = Math.abs(Y(a) - Y(b)), cx = m.l + i * bw + bw / 2;
+        return /* @__PURE__ */ l.jsxs("g", { onMouseMove: (ev) => show(ev, /* @__PURE__ */ l.jsx(Ie, { title: x.label, rows: [["Value", full ? O(x.value, k) : aaSigned(x.value, k)], start ? ["Share of " + st[0].label.toLowerCase(), `${(Math.abs(x.value) / start * 100).toFixed(1)}%`] : null] })), children: [
+          /* @__PURE__ */ l.jsx("rect", { x: m.l + i * bw + bw * 0.18, width: bw * 0.64, y, height: Math.max(1.5, h), rx: 2, className: full ? "wf-full" : x.value < 0 ? "wf-down" : "wf-up" }),
+          i < n - 1 && /* @__PURE__ */ l.jsx("line", { x1: m.l + i * bw + bw * 0.82, x2: m.l + (i + 1) * bw + bw * 0.18, y1: Y(full ? x.value : b), y2: Y(full ? x.value : b), className: "wf-link" }),
+          /* @__PURE__ */ l.jsx("text", { x: cx, y: y - 6, textAnchor: "middle", className: "wf-val", children: full ? O(x.value, k) : aaSigned(x.value, k) }),
+          /* @__PURE__ */ l.jsx("text", { x: cx, y: H - 24, textAnchor: "middle", className: "tick", children: x.label }),
+          !full && start ? /* @__PURE__ */ l.jsx("text", { x: cx, y: H - 10, textAnchor: "middle", className: "tick muted", children: `${(Math.abs(x.value) / start * 100).toFixed(1)}% of ${st[0].label.toLowerCase()}` }) : null
+        ] }, i);
+      })
+    ] }),
+    (e.notes || []).length ? /* @__PURE__ */ l.jsx("div", { className: "recon bad", children: e.notes.join(" · ") }) : /* @__PURE__ */ l.jsx("div", { className: "recon ok", children: "✓ Steps add up to the totals in the semantic view" }),
+    tip
+  ] });
+}
+// ---------------------------------------------------------------- scatter with groups and a reference line
+function ScX({ data: e }) {
+  const [s, w] = tn(), [hv, setHv] = P.useState(null), [tip, show, hide] = Ke(s), pts = e.points || [];
+  if (!pts.length) return /* @__PURE__ */ l.jsx("div", { ref: s, children: /* @__PURE__ */ l.jsx(Dt, { text: "No data." }) });
+  const H = 280, m = { l: 56, r: 14, t: 12, b: 40 }, W = Math.max(80, w - m.l - m.r), IH = H - m.t - m.b, ref = e.reference_y;
+  const rng = (a) => { const lo = Math.min(...a), hi = Math.max(...a), p = (hi - lo || Math.abs(hi) || 1) * 0.08; return [lo - p, hi + p]; };
+  const [xa, xb] = rng(pts.map((p) => p.x)), [ya, yb] = rng(pts.map((p) => p.y).concat(ref ? [ref.value] : [])), tx = zn(xa, xb, 4), ty = zn(ya, yb, 4);
+  const X = (v) => m.l + (v - tx[0]) / (tx[tx.length - 1] - tx[0] || 1) * W, Y = (v) => m.t + IH - (v - ty[0]) / (ty[ty.length - 1] - ty[0] || 1) * IH;
+  const groups = [...new Set(pts.map((p) => p.group).filter(Boolean))].sort(), gc = (g) => g ? Hl[groups.indexOf(g) % Hl.length] : Hl[0];
+  const below = ref ? pts.filter((p) => p.y < ref.value).length : 0;
+  return /* @__PURE__ */ l.jsxs("div", { className: "chart sc", ref: s, children: [
+    /* @__PURE__ */ l.jsx(AaSub, { parts: [`Each point = one ${e.dimension_label.toLowerCase()}`, e.period_label, ref && `${below} of ${pts.length} below ${ref.label || aaVal(ref.value, e.y_kind)}`] }),
+    groups.length > 1 && /* @__PURE__ */ l.jsx(AaLegend, { items: groups.map((g) => [gc(g), g]) }),
+    /* @__PURE__ */ l.jsxs("svg", { viewBox: `0 0 ${w} ${H}`, role: "img", "aria-label": `${e.y_label} vs ${e.x_label}`, onMouseLeave: () => { setHv(null), hide(); }, children: [
+      ref && /* @__PURE__ */ l.jsx("rect", { x: m.l, width: W, y: Y(ref.value), height: Math.max(0, m.t + IH - Y(ref.value)), className: "sc-bad-zone" }),
+      ty.map((v) => /* @__PURE__ */ l.jsxs("g", { children: [
+        /* @__PURE__ */ l.jsx("line", { x1: m.l, x2: m.l + W, y1: Y(v), y2: Y(v), className: "grid" }),
+        /* @__PURE__ */ l.jsx("text", { x: m.l - 8, y: Y(v) + 4, className: "tick", textAnchor: "end", children: aaVal(v, e.y_kind) })
+      ] }, "y" + v)),
+      tx.map((v) => /* @__PURE__ */ l.jsx("text", { x: X(v), y: H - 22, className: "tick", textAnchor: "middle", children: O(v, e.x_kind) }, "x" + v)),
+      ref && /* @__PURE__ */ l.jsxs("g", { className: "ol-ref bad", children: [
+        /* @__PURE__ */ l.jsx("line", { x1: m.l, x2: m.l + W, y1: Y(ref.value), y2: Y(ref.value) }),
+        /* @__PURE__ */ l.jsx("text", { x: m.l + W - 4, y: Y(ref.value) - 5, textAnchor: "end", children: ref.label || aaVal(ref.value, e.y_kind) })
+      ] }),
+      pts.map((p, i) => /* @__PURE__ */ l.jsx("circle", { cx: X(p.x), cy: Y(p.y), r: hv === i ? 7 : 4.5, className: `sc-pt ${ref && p.y < ref.value ? "below" : ""}`, style: { fill: gc(p.group) }, onMouseMove: (ev) => {
+        setHv(i), show(ev, /* @__PURE__ */ l.jsx(Ie, { title: p.label, rows: [p.group ? [e.group_label, p.group] : null, [e.x_label, O(p.x, e.x_kind)], [e.y_label, aaVal(p.y, e.y_kind), ref && p.y < ref.value ? "down" : ""]] }));
+      } }, i)),
+      /* @__PURE__ */ l.jsx("text", { x: m.l + W, y: H - 6, className: "tick", textAnchor: "end", children: `${e.x_label} →` }),
+      /* @__PURE__ */ l.jsx("text", { x: m.l, y: m.t - 2, className: "tick", children: `↑ ${e.y_label}` })
+    ] }),
+    tip
+  ] });
+}
+// ---------------------------------------------------------------- heatmap coloured against a centre or a healthy band
+function HmX({ data: e }) {
+  const a = P.useRef(null), [tip, show, hide] = Ke(a), dv = e.diverge || {}, k = e.kind, chg = dv.mode === "change";
+  const down = dv.better === "down", band = dv.band, centre = dv.centre, spread = dv.spread || 1;
+  const off = (v) => v == null ? 0 : band ? (v > band[1] ? v - band[1] : v < band[0] ? v - band[0] : 0) : centre != null ? v - centre : 0;
+  const fmtC = (v) => chg ? aaChg(v, k === "percent" ? "percent" : "number") : aaVal(v, k);
+  const bg = (v) => {
+    const o = off(v);
+    if (v == null) return { background: "var(--heat-empty, #f6f8fb)" };
+    if (!o) return { background: "var(--hm-mid, #f4f2ee)" };
+    const t = Math.min(1, Math.abs(o) / spread), bad = (o > 0) === down || !!band;
+    return { background: `color-mix(in srgb, ${band && (o > 0) !== down ? "var(--warn, #c77700)" : bad ? "var(--bad, #d03b3b)" : "var(--hm-good, var(--c1, #2a78d6))"} ${Math.round((bad ? 12 : 5) + t * (bad ? 72 : 45))}%, var(--card, #fff))`, color: t > 0.62 && bad ? "#fff" : "var(--ink)" };
+  };
+  const notable = (v) => v != null && Math.abs(off(v)) >= 0.3 * spread;
+  return /* @__PURE__ */ l.jsxs("div", { className: "heat-wrap chart hm", ref: a, onMouseLeave: hide, children: [
+    /* @__PURE__ */ l.jsx(AaSub, { parts: [e.period_label, band ? `healthy ${aaVal(band[0], k)}–${aaVal(band[1], k)} (uncoloured) · red above, amber below` : chg ? "change vs last year" : centre != null ? `coloured against the typical cell (${aaVal(centre, k)})` : "", e.filter_note] }),
+    /* @__PURE__ */ l.jsxs("table", { className: "heat", children: [
+      /* @__PURE__ */ l.jsx("thead", { children: /* @__PURE__ */ l.jsxs("tr", { children: [/* @__PURE__ */ l.jsx("th", { children: `${e.row_label} \\ ${e.col_label}` }), (e.cols || []).map((c) => /* @__PURE__ */ l.jsx("th", { children: c }, c))] }) }),
+      /* @__PURE__ */ l.jsx("tbody", { children: (e.rows || []).map((r, i) => /* @__PURE__ */ l.jsxs("tr", { children: [
+        /* @__PURE__ */ l.jsx("th", { children: r }),
+        (e.cols || []).map((c, j) => {
+          const v = (e.values[i] || [])[j];
+          return /* @__PURE__ */ l.jsx("td", { style: bg(v), className: notable(v) ? "hm-on" : "hm-off", onMouseMove: (ev) => show(ev, /* @__PURE__ */ l.jsx(Ie, { title: `${r} · ${c}`, rows: [[chg ? "Change vs last year" : e.metric_label, fmtC(v)], band && v != null ? ["Healthy band", `${aaVal(band[0], k)}–${aaVal(band[1], k)}`] : null, !band && !chg && centre != null ? ["Typical cell", aaVal(centre, k)] : null] })), children: notable(v) ? fmtC(v) : "" }, c);
+        })
+      ] }, r)) })
+    ] }),
+    /* @__PURE__ */ l.jsx("div", { className: "muted small hm-foot", children: "Only cells well away from normal show their value; hover any cell for its number." }),
+    tip
+  ] });
+}
 const yp = {
+  outlier_lines: OlX,
+  change_bars: ChX,
+  driver_split: ChX,
+  velocity_split: VsX,
+  stacked_trend: StX,
+  metric_waterfall: WfX,
   combo_chart: CmbX,
   treemap: TmX,
   gauge: GgX,
@@ -7278,6 +7578,12 @@ const yp = {
   worklist: gp,
   scorecard: xp
 }, jp = {
+  outlier_lines: 7,
+  change_bars: 6,
+  driver_split: 5,
+  velocity_split: 7,
+  stacked_trend: 7,
+  metric_waterfall: 5,
   combo_chart: 7,
   treemap: 6,
   gauge: 5,
@@ -7358,13 +7664,24 @@ function Sr({ size: e = 30 }) {
 }
 function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
   var U, _, E, T;
+  const [pe, setPe] = P.useState(""), per = (e.personas || []).find((z) => z.id === pe) || null;
+  P.useEffect(() => setPe(""), [e.domain]);
+  const PI = per ? (e.persona_ideas || {})[per.id] : null, pI = PI ? PI.ideas || [] : [], pBusy = (n == null ? void 0 : n.type) === "persona_ideas";
+  const [dq, setDq] = P.useState(""), [ro, setRo] = P.useState(!1), [rt, setRt] = P.useState(""), [le, setLe] = P.useState(!1), [lt, setLt] = P.useState(""), rdBusy = (n == null ? void 0 : n.type) === "persona_draft";
   const [r, i] = P.useState(""), [a, u] = P.useState(null), [o, d] = P.useState(""), [m, p] = P.useState(""), v = (e.featured || []).length > 0, [j, y] = P.useState("featured"), [C, k] = P.useState(0), [O, R] = P.useState(0), [Q, Z] = P.useState(!1), c = P.useRef({}), h = P.useRef(null), f = e.suggestions || [], x = e.building, N = (n == null ? void 0 : n.type) === "route_prompt", g = (n == null ? void 0 : n.type) === "compose_layout" || x && !e.error, M = N || g;
+  P.useEffect(() => {
+    const nw = (e.personas || []).find((z) => z.id === e.persona_new);
+    nw && (setPe(nw.id), d(nw.audience || ""), setRo(!1), setRt(""));
+  }, [e.persona_new, (e.personas || []).length]);
+  P.useEffect(() => setLe(!1), [pe]);
   P.useEffect(() => {
     const b = setInterval(() => k((B) => (B + 1) % Ko.length), 3500);
     return () => clearInterval(b);
   }, []), P.useEffect(() => {
     n || (!f.length && !c.current.base ? (c.current.base = !0, t("home_suggestions", {}, "Profiling your data…", !0)) : e.suggestions_by === "catalog" && !c.current.ai && (c.current.ai = !0, t("home_suggestions_ai", {}, "Cortex is proposing dashboards…", !0)));
   }, [f.length, e.suggestions_by, n]), P.useEffect(() => {
+    per && !n && !PI && c.current["pi:" + per.id] !== 1 && (c.current["pi:" + per.id] = 1, t("persona_ideas", { persona: per.id }, `Cortex is writing ideas for the ${per.label}…`, !0));
+  }, [pe, n, PI]), P.useEffect(() => {
     const b = x ? `${x.goal}:${e.revision}` : "";
     x && !n && !e.error && c.current.compose !== b && (c.current.compose = b, t("compose_layout", { goal: x.goal }, "Cortex is designing your dashboard…", !0));
   }, [x, n, e.revision]), P.useEffect(() => {
@@ -7383,9 +7700,10 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
       t("route_prompt", {
         suggestion: { ...a.s, goal: b, metrics: W ? [] : a.s.metrics || [] },
         prompt: b,
-        audience: o || a.s.audience
+        audience: o || a.s.audience,
+        persona: pe
       }, "Preparing the governed data…", !0);
-    } else t("route_prompt", o ? { prompt: b, audience: o } : { prompt: b }, "Finding the right governed data…", !0);
+    } else t("route_prompt", { prompt: b, ...(o ? { audience: o } : {}), ...(pe ? { persona: pe } : {}) }, per ? `Building for the ${per.label}…` : "Finding the right governed data…", !0);
   }, A = (b, B, W) => {
     i(B), d(b.audience || ""), p(""), u({ s: b, text: B, label: W }), window.scrollTo && window.scrollTo({ top: 0, behavior: "smooth" }), setTimeout(() => {
       const ae = h.current;
@@ -7452,9 +7770,21 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
     ] });
   }
   return /* @__PURE__ */ l.jsxs("section", { className: `home view ${o ? "" : "home-clean"}`, children: [
+    e.work && /* @__PURE__ */ l.jsxs("div", { className: "continue-card", children: [
+      /* @__PURE__ */ l.jsxs("div", { className: "cc-text", children: [
+        /* @__PURE__ */ l.jsx("small", { children: "Continue where you left off" }),
+        /* @__PURE__ */ l.jsx("b", { children: e.work.name }),
+        /* @__PURE__ */ l.jsx("span", { children: [e.work.persona ? `For the ${e.work.persona}` : "", e.work.built ? (e.work.dirty ? (e.work.saved ? "unsaved changes" : "not saved yet") : `saved · v${e.work.version}`) : "in review"].filter(Boolean).join(" · ") })
+      ] }),
+      /* @__PURE__ */ l.jsxs("div", { className: "cc-actions", children: [
+        (e.work.built || e.work.in_review) && /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => t("go", { step: "review" }, "Opening review…"), children: e.work.built ? "Edit metrics & outline" : "Back to review" }),
+        e.work.built && /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn", onClick: () => t("go", { step: "workspace" }, "Opening dashboard…"), children: "Open dashboard →" }),
+        /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost cc-close", title: e.work.dirty ? "Close; you'll be asked to save or discard the changes" : "Close; a saved dashboard stays under Your drafts", onClick: () => t("work_close", {}, "Closing…", !0), children: "Close" })
+      ] })
+    ] }),
     /* @__PURE__ */ l.jsxs("div", { className: "home-hero", children: [
       /* @__PURE__ */ l.jsx("div", { className: "orb", children: /* @__PURE__ */ l.jsx(Sr, {}) }),
-      /* @__PURE__ */ l.jsx("div", { className: "home-kicker", children: "Analytics workspace / Build" }),
+      /* @__PURE__ */ l.jsx("div", { className: "home-kicker", children: e.domain_info ? `${e.domain_info.icon} ${e.domain_info.name} workspace · ${e.domain_info.company}` : "Analytics workspace / Build" }),
       /* @__PURE__ */ l.jsxs("h1", { children: [
         /* @__PURE__ */ l.jsx("span", { children: "Ask your data." }),
         /* @__PURE__ */ l.jsx("span", { children: "Build governed dashboards." })
@@ -7493,13 +7823,44 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
         /* @__PURE__ */ l.jsxs("div", { className: "prompt-foot", children: [
           /* @__PURE__ */ l.jsxs("div", { className: "aud-pick", children: [
             /* @__PURE__ */ l.jsx("span", { className: "muted small", children: "For" }),
-            wp.map((b) => /* @__PURE__ */ l.jsx("button", { type: "button", className: `seg ${o === b.id ? "on" : ""}`, onClick: () => {
+            (e.personas || []).length ? (e.personas || []).map((b) => /* @__PURE__ */ l.jsxs("button", { type: "button", className: `seg persona ${b.custom ? "mine" : ""} ${pe === b.id ? "on" : ""}`, title: b.custom ? `Your persona (drafted by Cortex): ${b.owns}` : b.owns, onClick: () => {
+              const off = pe === b.id;
+              setPe(off ? "" : b.id), d(off ? "" : b.audience), p(""), setRo(!1);
+            }, children: [b.label, b.custom && /* @__PURE__ */ l.jsx("span", { className: "seg-x", title: "Remove this persona", onClick: (ev) => {
+              ev.stopPropagation(), pe === b.id && (setPe(""), d("")), t("persona_remove", { persona: b.id }, "Removing…", !0);
+            }, children: "×" })] }, b.id)) : wp.map((b) => /* @__PURE__ */ l.jsx("button", { type: "button", className: `seg ${o === b.id ? "on" : ""}`, onClick: () => {
               d(o === b.id ? "" : b.id), p("");
-            }, children: b.label }, b.id))
+            }, children: b.label }, b.id)),
+            /* '+ Your role' merged into Set me up (28 Oct): its first question has 'Just create my persona' */
+            (e.personas || []).length > 0 && /* @__PURE__ */ l.jsx("button", { type: "button", className: "seg persona setup", title: "Answer a few questions; Cortex proposes dashboards and alerts for your role, you pick, it builds them", disabled: M, onClick: () => t("setup_start", {}, "Preparing a few questions…", !0), children: "✦ Set me up" })
           ] }),
           /* @__PURE__ */ l.jsx("button", { type: "button", className: "send", disabled: M || !r.trim(), onClick: S, "aria-label": "Build dashboard", children: M ? /* @__PURE__ */ l.jsx("span", { className: "spinner" }) : /* @__PURE__ */ l.jsx("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.2", strokeLinecap: "round", children: /* @__PURE__ */ l.jsx("path", { d: "M12 19V5M5 12l7-7 7 7" }) }) })
         ] })
       ] }),
+      e.setup && /* @__PURE__ */ l.jsx(SetupPortal, { s: e.setup, send: t, busy: M }),
+      ro && !per && /* @__PURE__ */ l.jsx("div", { className: "persona-card role-draft", children: !e.persona_draft ? /* @__PURE__ */ l.jsxs("div", { className: "rd-row", children: [
+        /* @__PURE__ */ l.jsx("input", { className: "rd-input", autoFocus: !0, placeholder: "Describe your role, e.g. I'm a collections manager", value: rt, onChange: (ev) => setRt(ev.target.value), onKeyDown: (ev) => {
+          ev.key === "Enter" && rt.trim() && !rdBusy && t("persona_draft", { text: rt }, "Cortex is drafting your persona…");
+        } }),
+        /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn", disabled: M || rdBusy || !rt.trim(), onClick: () => t("persona_draft", { text: rt }, "Cortex is drafting your persona…"), children: rdBusy ? "Drafting…" : "Draft with Cortex" }),
+        /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => setRo(!1), children: "Cancel" })
+      ] }) : /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+        /* @__PURE__ */ l.jsx("div", { className: "rd-eyebrow", children: "Drafted by Cortex from your description · check it, then use it" }),
+        /* @__PURE__ */ l.jsxs("div", { className: "pc-head", children: [
+          /* @__PURE__ */ l.jsx("b", { children: e.persona_draft.label }),
+          /* @__PURE__ */ l.jsx("span", { children: `Owns: ${e.persona_draft.owns}` }),
+          /* @__PURE__ */ l.jsx("span", { children: `Decides: ${e.persona_draft.decides}` })
+        ] }),
+        /* @__PURE__ */ l.jsx("div", { className: "pc-q", children: (e.persona_draft.questions || []).map((q) => /* @__PURE__ */ l.jsx("span", { className: "pc-chip", children: q }, q)) }),
+        /* @__PURE__ */ l.jsxs("div", { className: "pc-watch", children: [/* @__PURE__ */ l.jsx("b", { children: "Watches: " }), (e.persona_draft.watches || []).map((w) => /* @__PURE__ */ l.jsx("span", { className: "pc-w", children: w }, w))] }),
+        /* @__PURE__ */ l.jsxs("div", { className: "pc-watch", children: [/* @__PURE__ */ l.jsx("b", { children: "Uses these metrics: " }), (e.persona_draft.metrics || []).map((w) => /* @__PURE__ */ l.jsx("span", { className: "pc-w m", children: w }, w))] }),
+        (e.persona_draft.missing || []).length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "pc-note muted", children: [/* @__PURE__ */ l.jsx("b", { children: "Not in this data: " }), e.persona_draft.missing.join(" · ")] }),
+        /* @__PURE__ */ l.jsxs("div", { className: "rd-actions", children: [
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => t("persona_draft_cancel", {}, "…", !0), children: "Start over" }),
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn", onClick: () => t("persona_add", {}, "Adding your persona…"), children: "Use this persona" })
+        ] })
+      ] }) }),
+      /* 29 Oct (Option A): the persona card moved next to its ideas, see "persona-split" below */
       /* @__PURE__ */ l.jsxs("div", { className: "home-context", children: [
         /* @__PURE__ */ l.jsxs("span", { className: "context-main", children: [
           /* @__PURE__ */ l.jsx("i", {}),
@@ -7510,6 +7871,7 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
         /* @__PURE__ */ l.jsx("span", { children: "Designed for Snowflake" }),
         /* @__PURE__ */ l.jsx("span", { children: "One workflow" })
       ] }),
+      /* @__PURE__ */ l.jsx(AttnStrip, { data: e, send: t, busy: M }),
       false && /* @__PURE__ */ l.jsxs("div", { className: "home-workflow", children: [
         ["01", "Ask", "Describe the business question"].map(([b, B, W]) => /* @__PURE__ */ l.jsxs("span", { children: [
           /* @__PURE__ */ l.jsx("b", { children: b }),
@@ -7573,7 +7935,7 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
         ] }) : null
       ] })
     ] }),
-    o && /* @__PURE__ */ l.jsxs("div", { className: "featured-bar", children: [
+    o && !per && /* @__PURE__ */ l.jsxs("div", { className: "featured-bar", children: [
       v && e.featured.map((b) => /* @__PURE__ */ l.jsxs("span", { className: "featured-ds", title: b.fqn, children: [
         /* @__PURE__ */ l.jsx("i", { className: "live-dot" }),
         " ",
@@ -7587,7 +7949,7 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
       ] }, b.fqn)),
       s && /* @__PURE__ */ l.jsx("button", { type: "button", className: "link connect-link", onClick: s, children: "＋ Connect a Snowflake table" })
     ] }),
-    o && ((_ = e.catalog_skipped) == null ? void 0 : _.length) > 0 && /* @__PURE__ */ l.jsxs("details", { className: "skipped-views", children: [
+    o && !per && ((_ = e.catalog_skipped) == null ? void 0 : _.length) > 0 && /* @__PURE__ */ l.jsxs("details", { className: "skipped-views", children: [
       /* @__PURE__ */ l.jsxs("summary", { children: [
         e.catalog_skipped.length,
         " semantic view",
@@ -7637,15 +7999,15 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
       ] })
     ] }),
     o && /* @__PURE__ */ l.jsxs("div", { className: "idea-head", children: [
-      /* @__PURE__ */ l.jsx("h3", { children: "Recommended" }),
-      /* @__PURE__ */ l.jsxs("label", { className: "idea-filter", children: [
+      /* @__PURE__ */ l.jsx("h3", { children: per ? `Ideas for the ${per.label}` : "Recommended" }),
+      !per && /* @__PURE__ */ l.jsxs("label", { className: "idea-filter", children: [
         /* @__PURE__ */ l.jsx("span", { children: "Prompt set" }),
         /* @__PURE__ */ l.jsxs("select", { value: m || o || "all", onChange: (b) => p(b.target.value), children: [
           /* @__PURE__ */ l.jsx("option", { value: "all", children: "Mixed prompts" }),
           wp.map((b) => /* @__PURE__ */ l.jsx("option", { value: b.id, children: b.label }, b.id))
         ] })
       ] }),
-      Q && v && /* @__PURE__ */ l.jsxs("div", { className: "idea-tabs", children: [
+      !per && Q && v && /* @__PURE__ */ l.jsxs("div", { className: "idea-tabs", children: [
         /* @__PURE__ */ l.jsxs("button", { type: "button", className: `seg ${j === "featured" ? "on" : ""}`, onClick: () => y("featured"), children: [
           "● ",
           e.featured.length > 1 ? "Featured data" : e.featured[0].label
@@ -7656,7 +8018,15 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
         ] })
       ] }),
       false && /* @__PURE__ */ l.jsx("div", { className: "idea-tabs idea-audience-tabs", children: Np.map((b) => /* @__PURE__ */ l.jsx("button", { type: "button", className: `seg ${m === b.id ? "on" : ""}`, onClick: () => p(m === b.id ? "" : b.id), children: b.label }, b.id)) }),
-      /* @__PURE__ */ l.jsx("span", { className: `idea-src ${Q ? "show-source" : "action-only"}`, children: !Q ? /* @__PURE__ */ l.jsx("button", { type: "button", className: "link", title: "Ask Cortex for a fresh set of ideas", onClick: () => {
+      per && /* @__PURE__ */ l.jsx("span", { className: "idea-src show-source", children: pBusy || !PI ? /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+        /* @__PURE__ */ l.jsx("span", { className: "spinner dark sm" }),
+        ` Cortex is writing ideas for the ${per.label}…`
+      ] }) : /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+        PI.by === "cortex" ? /* @__PURE__ */ l.jsx(Sr, { size: 13 }) : null,
+        PI.by === "cortex" ? ` Suggested by Cortex for the ${per.label}` + (PI.through ? ` · data through ${PI.through}` : PI.at ? ` · saved ${PI.at}` : "") : PI.by === "movers" ? " From what moved in the data (Cortex unavailable)" : " From this persona's questions (Cortex unavailable)",
+        /* @__PURE__ */ l.jsx("button", { type: "button", className: "link", title: `Ask Cortex for a fresh set of ideas for the ${per.label}`, onClick: () => t("persona_ideas", { persona: per.id, fresh: !0 }, `Cortex is writing new ideas for the ${per.label}…`, !0), children: "↻ New ideas" })
+      ] }) }),
+      !per && /* @__PURE__ */ l.jsx("span", { className: `idea-src ${Q ? "show-source" : "action-only"}`, children: !Q ? /* @__PURE__ */ l.jsx("button", { type: "button", className: "link", title: "Ask Cortex for a fresh set of ideas", onClick: () => {
         Z(!0), t("home_suggestions_ai", { fresh: !0 }, "Cortex is writing new ideas...", !0);
       }, children: "New ideas" }) : (n == null ? void 0 : n.type) === "home_suggestions_ai" && e.suggestions_by === "cortex" ? /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
         /* @__PURE__ */ l.jsx("span", { className: "spinner dark sm" }),
@@ -7680,7 +8050,7 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
         " Cortex is tailoring ideas…"
       ] }) : f.length ? "From your data catalog" : null })
     ] }),
-    o && L.length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "prompt-recs", children: [
+    o && !per && L.length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "prompt-recs", children: [
       /* @__PURE__ */ l.jsxs("div", { className: "prompt-recs-head", children: [
         /* @__PURE__ */ l.jsx("span", { children: "Starter prompts" }),
         /* @__PURE__ */ l.jsx("em", { children: J ? `${Ut[J]} prompt set` : "Mixed prompt set" })
@@ -7691,13 +8061,104 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
         /* @__PURE__ */ l.jsx("small", { children: ((b.themes || []).slice(0, 2).join(" + ") || "Governed prompt") + (b.semantic_view ? ` from ${String(b.semantic_view).split(".").slice(-1)[0]}` : "") })
       ] }, `${b.text}-${B}`)) })
     ] }),
-    o && f.length > 0 && !V.length && /* @__PURE__ */ l.jsxs("div", { className: "empty", children: [
+    o && !per && f.length > 0 && !V.length && /* @__PURE__ */ l.jsxs("div", { className: "empty", children: [
       "No ideas for this filter yet. ",
       /* @__PURE__ */ l.jsx("button", { type: "button", className: "link", onClick: () => {
         p("all"), y("all");
       }, children: "Show mixed ideas" })
     ] }),
-    o && (f.length ? /* @__PURE__ */ l.jsx("div", { className: "ideas", children: V.map((b, B) => /* @__PURE__ */ l.jsxs(
+    o && per && /* @__PURE__ */ l.jsxs("div", { className: "persona-split", children: [
+      (pI.length && !pBusy ? /* @__PURE__ */ l.jsx("div", { className: "ideas persona-ideas", children: pI.map((b, B) => /* @__PURE__ */ l.jsxs(
+      "button",
+      {
+        type: "button",
+        className: `idea ${Cr(b.audience)}`,
+        style: { "--i": B },
+        disabled: M,
+        title: "Puts this idea in the box to edit; nothing is built until you press send",
+        onClick: () => A(b, b.goal || b.title, `${per.label} idea "${b.title}"`),
+        children: [
+          b.theme_label && b.theme_label !== "persona-questions" && /* @__PURE__ */ l.jsx("span", { className: "idea-theme", children: b.theme_label }),
+          /* @__PURE__ */ l.jsx("b", { children: b.title }),
+          /* @__PURE__ */ l.jsx("span", { className: "idea-detail", children: b.detail }),
+          b.signal && /* @__PURE__ */ l.jsxs("span", { className: "idea-signal", title: "What changed in the governed data, last 13 weeks vs the same weeks last year (computed by SQL, not by the AI)", children: [/* @__PURE__ */ l.jsx("b", { children: "Why this idea: " }), b.signal] }),
+          /* @__PURE__ */ l.jsxs("span", { className: "idea-foot", children: [
+            (b.metrics || []).slice(0, 3).map((W) => /* @__PURE__ */ l.jsx("em", { children: W }, W)),
+            /* @__PURE__ */ l.jsx("small", { children: b.domain })
+          ] })
+        ]
+      },
+      `${b.title}-${B}`
+    )) }) : /* @__PURE__ */ l.jsx("div", { className: "ideas", children: [0, 1, 2, 3, 4, 5].map((b) => /* @__PURE__ */ l.jsxs("div", { className: "idea skeleton", children: [
+      /* @__PURE__ */ l.jsx("i", {}),
+      /* @__PURE__ */ l.jsx("b", {}),
+      /* @__PURE__ */ l.jsx("span", {}),
+      /* @__PURE__ */ l.jsx("span", {})
+    ] }, b)) })),
+      /* @__PURE__ */ l.jsxs("aside", { className: "persona-card side", "aria-label": `About the ${per.label} role`, children: [
+        /* @__PURE__ */ l.jsx("div", { className: "pc-eyebrow", children: "About this role" }),
+        /* @__PURE__ */ l.jsxs("div", { className: "pc-head", children: [
+          /* @__PURE__ */ l.jsx("b", { children: per.label }),
+          /* @__PURE__ */ l.jsx("span", { children: `Owns: ${per.owns}` }),
+          /* @__PURE__ */ l.jsx("span", { children: `Decides: ${per.decides}` })
+        ] }),
+        /* @__PURE__ */ l.jsxs("div", { className: "pc-watch", children: [
+          /* @__PURE__ */ l.jsx("b", { children: "Watches: " }),
+          le ? /* @__PURE__ */ l.jsx("textarea", { className: "pc-edit", rows: 2, value: lt, onChange: (ev) => setLt(ev.target.value) }) : (per.watches || []).map((w) => /* @__PURE__ */ l.jsx("span", { className: "pc-w", children: w }, w)),
+          /* @__PURE__ */ l.jsx("span", { className: `pc-status ${per.lens_status === "reviewed" ? "ok" : "draft"}`, title: per.lens_by ? `By ${per.lens_by}` : "", children: per.lens_status === "reviewed" ? "✓ Reviewed" : "Drafted by Cortex · not reviewed" }),
+          le ? /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+            /* @__PURE__ */ l.jsx("button", { type: "button", className: "link", onClick: () => (t("lens_save", { persona: per.id, watches: lt.split(/[,;\n]/).map((x) => x.trim()).filter(Boolean) }, "Cortex is writing ideas with the new guidance…"), setLe(!1)), children: "Save" }),
+            /* @__PURE__ */ l.jsx("button", { type: "button", className: "link", onClick: () => setLe(!1), children: "Cancel" })
+          ] }) : /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+            per.lens_status !== "reviewed" && /* @__PURE__ */ l.jsx("button", { type: "button", className: "link", onClick: () => t("lens_save", { persona: per.id }, "Approving…"), children: "Approve" }),
+            /* @__PURE__ */ l.jsx("button", { type: "button", className: "link", title: "Change what this role watches; ideas use it", onClick: () => (setLt((per.watches || []).join(", ")), setLe(!0)), children: "Edit" })
+          ] })
+        ] }),
+        per.custom && (per.metrics || []).length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "pc-watch", children: [/* @__PURE__ */ l.jsx("b", { children: "Uses these metrics: " }), per.metrics.map((w) => /* @__PURE__ */ l.jsx("span", { className: "pc-w m", children: w }, w))] }),
+        /* @__PURE__ */ l.jsx("div", { className: "pc-q", children: per.questions.map((q) => /* @__PURE__ */ l.jsx("button", { type: "button", className: "pc-chip", disabled: M, onClick: () => {
+          i(q), u(null), setTimeout(() => { const ae = h.current; ae && ae.focus(); }, 30);
+        }, children: q }, q)) }),
+        (per.alert_titles || []).length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "pc-note", children: [
+          /* @__PURE__ */ l.jsx("b", { children: "Alerts they own: " }),
+          per.alert_titles.join(" · "),
+          " (set up in My alerts)"
+        ] }),
+        (per.missing || []).length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "pc-note muted", children: [
+          /* @__PURE__ */ l.jsx("b", { children: "Not in this data: " }),
+          per.missing.join(" · ")
+        ] })
+      ] })
+    ] }),
+    /* 29 Oct: with a persona, the data strip sits below its ideas */
+    o && per && /* @__PURE__ */ l.jsxs("div", { className: "featured-bar", children: [
+      v && e.featured.map((b) => /* @__PURE__ */ l.jsxs("span", { className: "featured-ds", title: b.fqn, children: [
+        /* @__PURE__ */ l.jsx("i", { className: "live-dot" }),
+        " ",
+        /* @__PURE__ */ l.jsx("b", { children: b.label }),
+        " · ",
+        b.adhoc ? `${b.metrics} measures from facts` : `${b.metrics} governed metrics`,
+        " · ",
+        b.dimensions,
+        " dimensions",
+        b.adhoc ? "" : " · updating live"
+      ] }, b.fqn)),
+      s && /* @__PURE__ */ l.jsx("button", { type: "button", className: "link connect-link", onClick: s, children: "＋ Connect a Snowflake table" })
+    ] }),
+    o && per && ((_ = e.catalog_skipped) == null ? void 0 : _.length) > 0 && /* @__PURE__ */ l.jsxs("details", { className: "skipped-views", children: [
+      /* @__PURE__ */ l.jsxs("summary", { children: [
+        e.catalog_skipped.length,
+        " semantic view",
+        e.catalog_skipped.length > 1 ? "s" : "",
+        " found but not used for ideas"
+      ] }),
+      /* @__PURE__ */ l.jsx("ul", { children: e.catalog_skipped.map((b) => /* @__PURE__ */ l.jsxs("li", { children: [
+        /* @__PURE__ */ l.jsx("b", { title: b.fqn, children: b.name }),
+        ": ",
+        b.reason,
+        "."
+      ] }, b.fqn)) })
+    ] }),
+    o && !per && (f.length ? /* @__PURE__ */ l.jsx("div", { className: "ideas", children: V.map((b, B) => /* @__PURE__ */ l.jsxs(
       "button",
       {
         type: "button",
@@ -7752,8 +8213,14 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
     ] }),
     o && ((T = e.dashboards) == null ? void 0 : T.length) > 0 && /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
       /* @__PURE__ */ l.jsx("h3", { className: "sec-title", children: "Your drafts" }),
-      /* @__PURE__ */ l.jsx("div", { className: "recent", children: e.dashboards.slice(0, 6).map((b) => /* @__PURE__ */ l.jsxs("button", { type: "button", className: "recent-card", disabled: M, onClick: () => t("open_dashboard", { dashboard_id: b.dashboard_id }), children: [
+      /* @__PURE__ */ l.jsx("div", { className: "recent", children: e.dashboards.slice(0, 6).map((b) => /* @__PURE__ */ l.jsxs("div", { role: "button", tabIndex: 0, className: `recent-card ${dq === b.dashboard_id ? "confirm" : ""}`, "aria-disabled": M, onClick: () => !M && dq !== b.dashboard_id && t("open_dashboard", { dashboard_id: b.dashboard_id }), children: [
+        dq === b.dashboard_id ? /* @__PURE__ */ l.jsxs("div", { className: "rc-confirm", onClick: (ev) => ev.stopPropagation(), children: [
+          /* @__PURE__ */ l.jsxs("span", { children: ["Delete the draft ", /* @__PURE__ */ l.jsx("b", { children: b.name }), "? Its saved versions are kept in Snowflake for audit."] }),
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn danger small", disabled: M, onClick: () => { setDq(""), t("dashboard_delete", { dashboard_id: b.dashboard_id }, "Deleting draft…"); }, children: "Delete" }),
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost small", onClick: () => setDq(""), children: "Cancel" })
+        ] }) : (e.dash_deletable || []).includes(b.dashboard_id) && /* @__PURE__ */ l.jsx("button", { type: "button", className: "rc-x", title: "Delete this draft", "aria-label": `Delete ${b.name}`, onClick: (ev) => { ev.stopPropagation(), setDq(b.dashboard_id); }, children: "×" }),
         /* @__PURE__ */ l.jsx("b", { children: b.name }),
+        /* @__PURE__ */ l.jsx(AttnPills, { d: attnOf(e, b.dashboard_id) }),
         /* @__PURE__ */ l.jsxs("small", { children: [
           Ut[b.audience] || b.audience,
           " · v",
@@ -7766,6 +8233,33 @@ function Cp({ data: e, send: t, pending: n, onBuilder: s }) {
     o && /* @__PURE__ */ l.jsx("div", { className: "home-foot", children: /* @__PURE__ */ l.jsx("button", { type: "button", className: "link", onClick: () => t("go", { step: "source" }, "Opening…"), children: "Browse governed data sources (advanced) →" }) })
   ] });
 }
+/* Review work waiting on me, from the Validation reviews of every dashboard (replaces the old Change requests /
+   Waiting for my sign-off pages): a strip on Home and a badge on each dashboard card. */
+function AttnStrip({ data: e, send: t, busy }) {
+  const a = e.attention || [];
+  if (!a.length) return null;
+  const fix = a.reduce((s, d) => s + d.to_fix, 0), chk = a.reduce((s, d) => s + d.to_recheck, 0);
+  return /* @__PURE__ */ l.jsxs("div", { className: "attn", role: "region", "aria-label": "Review work waiting on you", children: [
+    /* @__PURE__ */ l.jsxs("div", { className: "attn-head", children: [
+      /* @__PURE__ */ l.jsx("b", { children: `${a.length} dashboard${a.length === 1 ? " needs" : "s need"} your attention` }),
+      /* @__PURE__ */ l.jsx("span", { children: [fix ? `${fix} tile${fix === 1 ? "" : "s"} to fix` : "", chk ? `${chk} fix${chk === 1 ? "" : "es"} to re-check` : ""].filter(Boolean).join(" · ") })
+    ] }),
+    /* @__PURE__ */ l.jsx("div", { className: "attn-list", children: a.slice(0, 4).map((d) => /* @__PURE__ */ l.jsxs("button", { type: "button", className: "attn-row", disabled: busy, onClick: () => t("uat_open", { dashboard_id: d.dashboard_id, cid: d.cid }, "Opening the tile under review…"), children: [
+      /* @__PURE__ */ l.jsx("b", { children: d.name }),
+      /* @__PURE__ */ l.jsx(AttnPills, { d }),
+      d.oldest_days > 2 && /* @__PURE__ */ l.jsx("small", { children: `oldest ${d.oldest_days} days` }),
+      /* @__PURE__ */ l.jsx("span", { className: "attn-go", children: "Open →" })
+    ] }, d.dashboard_id)) }),
+    a.length > 4 && /* @__PURE__ */ l.jsx("div", { className: "muted small", children: `+ ${a.length - 4} more: see the badges on your dashboards` })
+  ] });
+}
+function AttnPills({ d }) {
+  return d ? /* @__PURE__ */ l.jsxs("span", { className: "attn-pills", children: [
+    d.to_fix > 0 && /* @__PURE__ */ l.jsx("em", { className: "fix", title: "Tiles a reviewer sent back to you", children: `${d.to_fix} to fix` }),
+    d.to_recheck > 0 && /* @__PURE__ */ l.jsx("em", { className: "chk", title: "Fixes waiting for your re-check", children: `${d.to_recheck} to re-check` })
+  ] }) : null;
+}
+const attnOf = (e, id) => (e.attention || []).find((x) => x.dashboard_id === id);
 const Ni = ["Sales", "Profitability", "Customers", "Fulfilment", "Returns", "Inventory", "Plan"];
 function Sp({ type: e }) {
   const t = { width: 22, height: 16, viewBox: "0 0 22 16", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round" };
@@ -7865,6 +8359,16 @@ function Skx({ type: e, mini: m, n: NK }) {
       return svg([0, 1, 2, 3].map((r) => [...Array(10)].map((_, c) => /* @__PURE__ */ l.jsx("rect", { x: 2 + c * 11.6, y: 2 + r * 11.5, width: 10.6, height: 10.5, fill: A, opacity: 0.15 + ((r * 3 + c * 7) % 9) / 11 }, r + "-" + c))).flat());
     case "small_multiples":
       return svg([0, 1, 2, 3, 4, 5].map((i) => /* @__PURE__ */ l.jsx("g", { children: [/* @__PURE__ */ l.jsx("rect", { x: 2 + (i % 3) * 39.3, y: 2 + Math.floor(i / 3) * 23, width: 37, height: 21, fill: G }), line(`${5 + (i % 3) * 39.3},${18 + Math.floor(i / 3) * 23} ${15 + (i % 3) * 39.3},${12 + Math.floor(i / 3) * 23 + (i % 2) * 3} ${25 + (i % 3) * 39.3},${14 + Math.floor(i / 3) * 23} ${36 + (i % 3) * 39.3},${8 + Math.floor(i / 3) * 23 + (i % 3) * 2}`, D)] }, i)));
+    case "outlier_lines":
+      return svg([line("2,30 20,31 40,29 60,30 80,31 100,30 118,29", "#c9d3df"), line("2,34 20,33 40,35 60,34 80,33 100,34 118,35", "#c9d3df"), line("2,38 20,38 40,37 60,38 80,39 100,38 118,38", "#c9d3df"), line("2,32 20,31 40,27 60,22 80,17 100,12 118,7", "#E8830C")]);
+    case "change_bars": case "driver_split":
+      return svg([[60, 40], [60, 30], [60, 18], [60, -12], [60, -24]].map(([x, w], i) => /* @__PURE__ */ l.jsx("rect", { x: w >= 0 ? x : x + w, y: 4 + i * 8.5, width: Math.abs(w), height: 6, rx: 1, fill: w >= 0 ? "#9fd8a5" : "#e06c6c" }, i)).concat([/* @__PURE__ */ l.jsx("line", { x1: 60, x2: 60, y1: 2, y2: 46, stroke: D, strokeWidth: 1, ...S }, "z")]));
+    case "velocity_split":
+      return svg([[8, 46], [4, 36], [-2, 30], [6, 22], [-3, -40]].map(([d, v], i) => /* @__PURE__ */ l.jsxs("g", { children: [/* @__PURE__ */ l.jsx("rect", { x: d >= 0 ? 50 : 50 + d, y: 4 + i * 8.5, width: Math.abs(d), height: 6, fill: "#11A39A" }), /* @__PURE__ */ l.jsx("rect", { x: v >= 0 ? 50 + Math.max(0, d) : 50 + v, y: 4 + i * 8.5, width: Math.abs(v), height: 6, fill: D })] }, i)));
+    case "stacked_trend":
+      return svg([12, 14, 13, 16, 19, 23, 28, 33].map((h, i) => /* @__PURE__ */ l.jsxs("g", { children: [/* @__PURE__ */ l.jsx("rect", { x: 4 + i * 14.5, y: 46 - h, width: 10, height: h * 0.55, fill: "#9cc3e8" }), /* @__PURE__ */ l.jsx("rect", { x: 4 + i * 14.5, y: 46 - h * 0.45, width: 10, height: h * 0.27, fill: "#3f86c8" }), /* @__PURE__ */ l.jsx("rect", { x: 4 + i * 14.5, y: 46 - h * 0.18, width: 10, height: h * 0.18, fill: D })] }, i)));
+    case "metric_waterfall":
+      return svg([/* @__PURE__ */ l.jsx("rect", { x: 4, y: 4, width: 20, height: 42, fill: D }), /* @__PURE__ */ l.jsx("rect", { x: 34, y: 4, width: 20, height: 7, fill: "#e06c6c" }), /* @__PURE__ */ l.jsx("rect", { x: 64, y: 11, width: 20, height: 35, fill: D }), /* @__PURE__ */ l.jsx("rect", { x: 94, y: 11, width: 20, height: 3, fill: "#e06c6c" })]);
     case "combo_chart":
       return svg([...[22, 28, 18, 30, 26, 34, 38].map((h, i) => /* @__PURE__ */ l.jsx("rect", { x: 6 + i * 16, y: 46 - h, width: 11, height: h, fill: i === 6 ? D : F }, i)), line("11,24 27,20 43,26 59,16 75,19 91,12 107,9", A)]);
     case "treemap":
@@ -8106,11 +8610,11 @@ function Ep({ data: e, send: t, ctx: CTX }) {
   return /* @__PURE__ */ l.jsxs("section", { className: "view review2", children: [
     /* @__PURE__ */ l.jsxs("header", { className: "rv2-head", children: [
       /* @__PURE__ */ l.jsxs("div", { children: [
-        /* @__PURE__ */ l.jsx("div", { className: "eyebrow", children: "Step 2 of 3 · Review the draft" }),
+        /* @__PURE__ */ l.jsx("div", { className: "eyebrow", children: n.editing ? "Editing your built dashboard · tile edits are kept" : "Step 2 of 3 · Review the draft" }),
         /* @__PURE__ */ l.jsx("h1", { children: s.display_name }),
         /* @__PURE__ */ l.jsx("p", { className: "muted", children: s.description })
       ] }),
-      /* @__PURE__ */ l.jsx("div", { className: "rv2-meta", children: /* @__PURE__ */ l.jsx("span", { className: "pill ai", children: s.origin === "persona" ? `Reviewed layout · ✦ ${s.slot_origin === "cortex" ? "metrics chosen by Cortex" : "default metrics"}` : "✦ Drafted by Cortex" }) })
+      /* @__PURE__ */ l.jsx("div", { className: "rv2-meta", children: /* @__PURE__ */ l.jsx("span", { className: "pill ai", children: s.pack ? `${s.persona && s.persona.label ? "Built for the " + s.persona.label + " · " : ""}Reviewed ${(e.domain_info || {}).company || "business"} layout · built from its business ontology` : s.origin === "persona" ? `Reviewed layout · ✦ ${s.slot_origin === "cortex" ? "metrics chosen by Cortex" : "default metrics"}` : "✦ Drafted by Cortex" }) })
     ] }),
     e.metric_draft && /* @__PURE__ */ l.jsx(pd, { md: e.metric_draft, send: t }),
     /* @__PURE__ */ l.jsxs("section", { className: "rv2-block", children: [
@@ -8219,7 +8723,8 @@ Will be removed: its metric is not selected`}`,
       ] }, S.page_id)) })
     ] }),
     /* @__PURE__ */ l.jsxs("div", { className: "review-bar", children: [
-      /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => t("go", { step: "home" }, "Opening…"), children: "← Back" }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => t("go", { step: "home" }, "Opening…"), children: "← Home" }),
+      e.spec && /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", title: "Back to the dashboard without changing it", onClick: () => t("go", { step: "workspace" }, "Opening…"), children: "Dashboard (no changes)" }),
       /* @__PURE__ */ l.jsxs("span", { className: "muted small", children: [
         o.size,
         " metrics · ",
@@ -8237,7 +8742,7 @@ Will be removed: its metric is not selected`}`,
             className: "btn",
             disabled: !h && !x.length,
             onClick: E,
-            children: "Build dashboard →"
+            children: n.editing ? "Update dashboard →" : "Build dashboard →"
           }
         )
       ] })
@@ -8745,10 +9250,7 @@ function Op({ data: e, send: t, name: n, onClose: s }) {
       /* @__PURE__ */ l.jsx("span", { className: "muted small", children: "(optional, comma-separated Snowflake user names)" }),
       /* @__PURE__ */ l.jsx("input", { value: o, onChange: (c) => d(c.target.value), placeholder: "e.g. JDOE, ASMITH" })
     ] }),
-    (() => {
-      const vb = e.validation_brief || {}, vc = vb.counts || {}, open = (vc.mismatch || 0) + (vc.review || 0);
-      return !vb.status ? /* @__PURE__ */ l.jsx("div", { className: "pub-val none", children: "Not validated yet. Viewers will see no verification line. Open the Validation tab to check every page first." }) : /* @__PURE__ */ l.jsx("div", { className: `pub-val ${vb.status}`, children: `${vb.pages_checked} of ${vb.pages_total} page(s) validated · ${vc.pass || 0} verified` + (vc.accepted ? ` · ${vc.accepted} accepted` : "") + (open ? ` · ${open} open finding(s): publishing is allowed, viewers will see them flagged` : "") });
-    })(),
+    /* @__PURE__ */ l.jsx(ValGate, { data: e, send: t }),
     e.uat && /* @__PURE__ */ l.jsx("div", { className: `pub-val uat-${e.uat.status}`, children: `Business sign-off: ${UAT_TXT[e.uat.status]} · ${e.uat.pages_signed} of ${e.uat.pages_total} page(s) signed off` + (e.uat.status === "approved" || e.uat.status === "approved_notes" ? "" : ": publishing is allowed") }),
     e.uat && e.uat.open_requests > 0 && /* @__PURE__ */ l.jsx("div", { className: "pub-val mismatch", children: `${e.uat.open_requests} change request(s) still open on this dashboard. Publishing is allowed; the requests stay open until the reviewer closes them.` }),
     /* @__PURE__ */ l.jsxs("label", { children: [
@@ -8757,7 +9259,7 @@ function Op({ data: e, send: t, name: n, onClose: s }) {
     ] }),
     /* @__PURE__ */ l.jsxs("div", { className: "modal-foot", children: [
       /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: s, children: "Cancel" }),
-      /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn", onClick: () => t("publish", { name: r, roles: a, users: o.split(",").map((c) => c.trim()).filter(Boolean), note: m }, "Publishing to Snowflake…"), children: "Publish" })
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn", disabled: ((e.validation_fresh || {}).state || "none") !== "fresh", title: ((e.validation_fresh || {}).state || "none") !== "fresh" ? "Validate first" : "", onClick: () => t("publish", { name: r, roles: a, users: o.split(",").map((c) => c.trim()).filter(Boolean), note: m }, "Publishing to Snowflake…"), children: "Publish" })
     ] })
   ] }) }) });
 }
@@ -8810,7 +9312,8 @@ function Dp({ data: e, send: t, ctx: n, pending: s }) {
   }, [uatFocus && uatFocus.id]);
   P.useEffect(() => {
     const R = `${g.page_id}:${e.revision}`, need = (e.validation_needed || []).includes(g.page_id), narr = q !== "executives" || !!S || W.current.startsWith(g.page_id + ":") && W.current !== R;
-    need && !i && !w && !s && narr && valKey.current !== R && (valKey.current = R, t("validate", { page_id: g.page_id }, "Validating numbers against the base tables…", !0));
+    /* 21 Oct: no automatic validation while building; it runs from the Validation tab (or Publish → Validate now) */
+    void need, void narr;
   }, [g.page_id, e.revision, s, w, S]);
   const vjob = e.validation_job;
   P.useEffect(() => {
@@ -8842,7 +9345,7 @@ function Dp({ data: e, send: t, ctx: n, pending: s }) {
     ] }),
     /* @__PURE__ */ l.jsxs("div", { className: "ws-head", children: [
       /* @__PURE__ */ l.jsxs("div", { children: [
-        /* @__PURE__ */ l.jsxs("div", { className: "mast-eyebrow", children: [/* @__PURE__ */ l.jsx("i", { className: "live-dot" }), `${(Pn[r.audience_id] || "").toUpperCase()} · LIVE${((cal0) => cal0 ? ` · DATA THROUGH ${cal0.max_date}` : "")((e.profile || {}).calendar)}`] }),
+        /* @__PURE__ */ l.jsxs("div", { className: "mast-eyebrow", children: [/* @__PURE__ */ l.jsx("i", { className: "live-dot" }), `${(r.persona && r.persona.label ? "FOR " + r.persona.label : Pn[r.audience_id] || "").toUpperCase()} · LIVE${((cal0) => cal0 ? ` · DATA THROUGH ${cal0.max_date}` : "")((e.profile || {}).calendar)}`] }),
         false && /* @__PURE__ */ l.jsxs("div", { className: "eyebrow", children: [
           Pn[r.audience_id],
           " ·",
@@ -8859,13 +9362,16 @@ function Dp({ data: e, send: t, ctx: n, pending: s }) {
           ] }),
           r.edited && !i && /* @__PURE__ */ l.jsx("span", { className: "origin", children: " · edited" })
         ] }),
-        i ? /* @__PURE__ */ l.jsx("h1", { className: "ws-title-v", children: ((ka = e.dashboard) == null ? void 0 : ka.name) || r.display_name }) : /* @__PURE__ */ l.jsx("input", { className: "ws-title", value: o, onChange: (R) => d(R.target.value) }),
+        i ? /* @__PURE__ */ l.jsx("h1", { className: "ws-title-v", children: ((ka = e.dashboard) == null ? void 0 : ka.name) || r.display_name }) : /* @__PURE__ */ l.jsxs("div", { className: "ws-title-row", children: [/* @__PURE__ */ l.jsx("input", { className: "ws-title", value: o, onChange: (R) => d(R.target.value) }) ] }),
         /* @__PURE__ */ l.jsx("div", { className: "muted", children: r.description })
       ] }),
       /* @__PURE__ */ l.jsxs("div", { className: "ws-actions", children: [
         /* theme picker removed from the header (15 Oct): Classic by default; company themes come from settings */
         /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", title: "Refresh the data", "aria-label": "Refresh", onClick: () => t("refresh", { page_id: g.page_id }), children: "↻" }),
+        /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", title: "A one-page brief for a meeting: headline, key numbers, drivers, risks, actions and likely questions, written by Cortex only from this dashboard's governed numbers", onClick: () => t("meeting_brief", {}, "Cortex is writing your meeting brief…"), children: "Meeting brief" }),
+        /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", title: "Download every page of this dashboard as one HTML file anyone can open (no Snowflake access); save it as PDF from the browser", onClick: (ev) => aaSnapshot(ev.currentTarget, e, r.pages, a, u), children: "Share snapshot" }),
         i ? /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => t("exit_viewer", {}, "Opening…"), children: "Close" }) : /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", title: "Add or remove metrics and pages; your tile edits are kept", onClick: () => t("go", { step: "review" }, "Opening review…"), children: "← Metrics & outline" }),
           /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => t("save_dashboard", { name: o }, "Saving draft…"), children: "Save draft" }),
           /* @__PURE__ */ l.jsxs("button", { type: "button", className: "btn", onClick: () => N(!0), children: [
             "Publish",
@@ -8874,13 +9380,14 @@ function Dp({ data: e, send: t, ctx: n, pending: s }) {
         ] })
       ] })
     ] }),
+    e.brief && /* @__PURE__ */ l.jsx(BriefModal, { b: e.brief, send: t }),
+    !i && /* @__PURE__ */ l.jsx(ModeBar, { data: e, vt, setVt, send: t, pages: r.pages.length, tiles: r.pages.reduce((a, pg) => a + (pg.components || []).length, 0) }),
+    !i && /* @__PURE__ */ l.jsx(ValDone, { d: e.val_done, onOpen: () => setVt(!0) }),
     /* @__PURE__ */ l.jsx(zp, { persona: q, data: e, onRefresh: B, auto: U, setAuto: _, refreshedAt: T }),
-    F && !i && k == null && /* @__PURE__ */ l.jsxs("div", { className: "ptab-single", children: [
-      vt && /* @__PURE__ */ l.jsx("button", { type: "button", className: "ptab-add", onClick: () => setVt(!1), children: "← Dashboard" }),
-      /* @__PURE__ */ l.jsxs("button", { type: "button", className: `ptab-add vt-single ${vt ? "on" : ""} ${(e.validation_overview || {}).status || "none"}`, onClick: () => setVt(!0), children: [/* @__PURE__ */ l.jsx("span", { className: "ptab-num", children: ((e.validation_overview || {}).status || "none") === "none" ? "?" : VAL_ICON[(e.validation_overview || {}).status] || "✓" }), "Validation"] }),
+    F && !i && k == null && !vt && /* @__PURE__ */ l.jsxs("div", { className: "ptab-single", children: [
       /* @__PURE__ */ l.jsx("button", { type: "button", className: "ptab-add", onClick: () => c(""), children: "+ Add page" })
     ] }),
-    /* @__PURE__ */ l.jsxs("div", { className: `ptabs-wrap ${F && k == null ? "hidden" : ""}`, children: [
+    /* @__PURE__ */ l.jsxs("div", { className: `ptabs-wrap ${(F && k == null) || vt ? "hidden" : ""}`, children: [
       /* @__PURE__ */ l.jsxs("div", { className: "ptabs", role: "tablist", children: [
         r.pages.map((R, K) => {
           const nt = R.page_id === g.page_id;
@@ -8921,7 +9428,6 @@ function Dp({ data: e, send: t, ctx: n, pending: s }) {
             ] })
           ] }, R.page_id);
         }),
-        !i && /* @__PURE__ */ l.jsx("div", { className: `ptab vt-tab ${vt ? "on" : ""} ${(e.validation_overview || {}).status || "none"}`, children: /* @__PURE__ */ l.jsxs("button", { type: "button", role: "tab", "aria-selected": vt, className: "ptab-btn", onClick: () => setVt(!0), children: [/* @__PURE__ */ l.jsx("span", { className: "ptab-num", children: ((e.validation_overview || {}).status || "none") === "none" ? "?" : VAL_ICON[(e.validation_overview || {}).status] || "✓" }), "Validation"] }) }),
         !i && /* @__PURE__ */ l.jsx("button", { type: "button", className: `ptab-add ${k != null ? "on" : ""}`, onClick: () => c(k == null ? "" : null), children: "+ Add page" })
       ] }),
       !i && k != null && /* @__PURE__ */ l.jsxs("div", { className: "addpage-pop", role: "dialog", "aria-modal": "true", "aria-labelledby": "addpage-title", children: [
@@ -8977,7 +9483,7 @@ function Dp({ data: e, send: t, ctx: n, pending: s }) {
             ] })
           ] }) : /* @__PURE__ */ l.jsx("div", { className: "muted small", children: "Cortex writes the summary only from the governed facts computed for this page." })
         ] }),
-        /* @__PURE__ */ l.jsx(ValStrip, { data: e, pageId: g.page_id, viewer: i, onOpen: (R) => R ? setValOpen({ focus: R }) : setVt(!0) }),
+        i && /* @__PURE__ */ l.jsx(ValStrip, { data: e, pageId: g.page_id, viewer: i, onOpen: (R) => R ? setValOpen({ focus: R }) : setVt(!0) }),
         /* @__PURE__ */ l.jsx(Ap, { data: e, send: t, pageId: g.page_id }),
         !i && /* @__PURE__ */ l.jsx("div", { className: "tile add", style: { gridColumn: "span 12" }, children: y ? /* @__PURE__ */ l.jsx(Rp, { page: g, data: e, send: t, onClose: () => C(!1) }) : /* @__PURE__ */ l.jsx("button", { type: "button", className: "add-btn", onClick: () => C(!0), children: "+ Add tile" }) }),
         !M.length && /* @__PURE__ */ l.jsxs("div", { className: "empty", children: [
@@ -9003,7 +9509,7 @@ function Dp({ data: e, send: t, ctx: n, pending: s }) {
                   ] })
                 ] }),
                 /* @__PURE__ */ l.jsxs("span", { className: "tile-acts", children: [
-                  !i && /* @__PURE__ */ l.jsx(ValBadge, { v: ((e.validation || {}).tiles || {})[`${g.page_id}/${R.component_id}`], stale: (e.validation_stale || []).includes(`${g.page_id}/${R.component_id}`), onOpen: () => setValOpen({ focus: `${g.page_id}/${R.component_id}` }) }),
+                  !i && /* @__PURE__ */ l.jsx(ValBadge, { v: ((e.validation || {}).tiles || {})[`${g.page_id}/${R.component_id}`], stale: (e.validation_checking || []).includes(`${g.page_id}/${R.component_id}`), changed: ((e.validation_fresh || {}).changed || []).includes(`${g.page_id}/${R.component_id}`), onOpen: () => setValOpen({ focus: `${g.page_id}/${R.component_id}` }) }),
                   R.type === "kpi_plan" && !i ? /* @__PURE__ */ l.jsx("span", { className: "show-as", role: "group", "aria-label": "Show KPIs as", children: [["bullet", "Bars"], ["variance", "Arrows"], ["table", "Table"]].map(([pt, vd]) => {
                     var La;
                     return /* @__PURE__ */ l.jsx(
@@ -9039,7 +9545,7 @@ function Dp({ data: e, send: t, ctx: n, pending: s }) {
                 /* @__PURE__ */ l.jsx("i", {}),
                 /* @__PURE__ */ l.jsx("i", {})
               ] }),
-              K.status === "ready" && nt && /* @__PURE__ */ l.jsx(nt, { data: K.data, ctx: n, spec: R }),
+              K.status === "ready" && nt && /* @__PURE__ */ l.jsx(AskWrap, { data: K.data, spec: R, ctx: n, view: e.view, model: e.model, dash: (e.dashboard && e.dashboard.name) || (r && r.display_name) || "", children: /* @__PURE__ */ l.jsx(nt, { data: K.data, ctx: n, spec: R }) }),
               K.status === "error" && /* @__PURE__ */ l.jsxs("div", { className: "alert error small", children: [
                 "Query failed — no substitute value shown. ",
                 K.error
@@ -9394,7 +9900,7 @@ function Hp({ data: e, emit: t }) {
         `Drilling into ${C}…`
       );
     }
-  }, v = e.step, j = { home: !0, review: !!e.draft, source: !0, metrics: !!e.source, layout: !!e.profile, workspace: !!e.spec };
+  }, v = e.step, j = { home: !0, review: !!e.draft || !!e.spec, source: !0, metrics: !!e.source, layout: !!e.profile, workspace: !!e.spec };
   return /* @__PURE__ */ l.jsxs("div", { className: "aa", ref: RT, onPointerDownCapture: (ev) => {
     const el = RT.current;
     if (!el) return;
@@ -9411,6 +9917,7 @@ function Hp({ data: e, emit: t }) {
           /* @__PURE__ */ l.jsx("small", { children: "Enterprise · Snowflake-native" })
         ] })
       ] }),
+      !e.is_portal && !e.viewer_mode && /* @__PURE__ */ l.jsx(DomSwitch, { data: e, send: d }),
       e.viewer_mode ? /* @__PURE__ */ l.jsx("nav", { className: "steps", children: /* @__PURE__ */ l.jsxs("button", { type: "button", className: "step done", onClick: () => d("exit_viewer", {}, "Opening…"), children: [
         /* @__PURE__ */ l.jsx("span", { className: "num", children: "←" }),
         /* @__PURE__ */ l.jsxs("span", { children: [
@@ -9435,6 +9942,11 @@ function Hp({ data: e, emit: t }) {
           },
           y.id
         )) }),
+        e.work && /* @__PURE__ */ l.jsxs("div", { className: "work-now", title: "The dashboard you are working on. It stays open while you go to Home.", children: [
+          /* @__PURE__ */ l.jsx("small", { children: "Working on" }),
+          /* @__PURE__ */ l.jsx("b", { children: e.work.name }),
+          /* @__PURE__ */ l.jsx("span", { className: `work-state ${e.work.dirty ? "dirty" : ""}`, children: e.work.dirty ? (e.work.saved ? "Unsaved changes" : "Not saved yet") : e.work.saved ? `Saved · v${e.work.version}` : "In review" })
+        ] }),
         /* @__PURE__ */ l.jsxs("details", { className: "advanced", open: ["source", "metrics", "layout"].includes(v), children: [
           /* @__PURE__ */ l.jsx("summary", { children: "Advanced setup" }),
           Vp.map((y) => /* @__PURE__ */ l.jsx(
@@ -9461,17 +9973,7 @@ function Hp({ data: e, emit: t }) {
         ] })
       ] }),
       !e.is_portal && !e.viewer_mode && /* @__PURE__ */ l.jsxs("nav", { className: "steps portal-nav settings-nav review-nav", children: [
-        /* @__PURE__ */ l.jsx("div", { className: "portal-label", children: "Review" }),
-        /* @__PURE__ */ l.jsxs("button", { type: "button", className: `step done ${r === "requests" ? "on" : ""}`, onClick: () => i("requests"), children: [
-          /* @__PURE__ */ l.jsx("span", { className: "num", children: "📥" }),
-          /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: "Change requests" }), /* @__PURE__ */ l.jsx("small", { children: "Sent back to builders" })] }),
-          ((e.uat_inbox || {}).badge_requests || 0) > 0 && /* @__PURE__ */ l.jsx("span", { className: "nav-badge red", children: e.uat_inbox.badge_requests })
-        ] }),
-        /* @__PURE__ */ l.jsxs("button", { type: "button", className: `step done ${r === "recheck" ? "on" : ""}`, onClick: () => i("recheck"), children: [
-          /* @__PURE__ */ l.jsx("span", { className: "num", children: "✅" }),
-          /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: "Waiting for my sign-off" }), /* @__PURE__ */ l.jsx("small", { children: "Fixes to re-check" })] }),
-          ((e.uat_inbox || {}).badge_recheck || 0) > 0 && /* @__PURE__ */ l.jsx("span", { className: "nav-badge blue", children: e.uat_inbox.badge_recheck })
-        ] }),
+        /* @__PURE__ */ l.jsx("div", { className: "portal-label", children: "Monitor" }),
         /* @__PURE__ */ l.jsxs("button", { type: "button", className: `step done ${r === "alerts" || r === "alert" ? "on" : ""}`, onClick: () => i("alerts"), children: [
           /* @__PURE__ */ l.jsx("span", { className: "num", children: "🔔" }),
           /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: "My alerts" }), /* @__PURE__ */ l.jsx("small", { children: "Data alerts by email" })] }),
@@ -9494,7 +9996,7 @@ function Hp({ data: e, emit: t }) {
     ] }),
     /* @__PURE__ */ l.jsxs("main", { className: "main", children: [
       /* @__PURE__ */ l.jsx(UatDownload, { d: e.download, send: d }),
-      v !== "home" && /* @__PURE__ */ l.jsx(Kp, { data: e, onDrawer: i, send: d }),
+      v !== "home" && v !== "domains" && /* @__PURE__ */ l.jsx(Kp, { data: e, onDrawer: i, send: d }),
       e.error && /* @__PURE__ */ l.jsxs("div", { className: "alert error", children: [
         "⚠ ",
         e.error
@@ -9503,13 +10005,25 @@ function Hp({ data: e, emit: t }) {
         "✓ ",
         e.notice
       ] }),
-      v === "home" && /* @__PURE__ */ l.jsx(Cp, { data: e, send: d, pending: n, onBuilder: () => i("builder") }),
+      v === "domains" && /* @__PURE__ */ l.jsx(DomPicker, { data: e, send: d, pending: n }),
+      v === "home" && /* @__PURE__ */ l.jsx(Cp, { data: e, send: d, pending: n, onBuilder: () => i("builder") }, "home-" + (e.domain || "")),
       v === "source" && /* @__PURE__ */ l.jsx(Xp, { data: e, send: d }),
       v === "metrics" && e.model && /* @__PURE__ */ l.jsx(Gp, { data: e, send: d }),
       v === "layout" && /* @__PURE__ */ l.jsx(Zp, { data: e, send: d }),
       v === "review" && e.draft && /* @__PURE__ */ l.jsx(Ep, { data: e, send: d, ctx: p }),
       v === "workspace" && e.spec && /* @__PURE__ */ l.jsx(Dp, { data: e, send: d, ctx: p, pending: n })
     ] }),
+    e.leave && /* @__PURE__ */ l.jsx(_p, { title: "Unsaved changes", top: clickY.current, vis: vis.current, rootH: RT.current ? RT.current.offsetHeight : 0, side: "center",
+      onClose: () => d("leave_resolve", { choice: "cancel" }, "Cancelling…", !0),
+      children: /* @__PURE__ */ l.jsxs("div", { className: "leave-box", children: [
+        /* @__PURE__ */ l.jsxs("p", { children: [/* @__PURE__ */ l.jsx("b", { children: e.leave.name }), e.leave.saved ? " has changes that are not saved yet." : " has not been saved yet."] }),
+        /* @__PURE__ */ l.jsx("p", { className: "muted small", children: "Save it before you continue, or discard the changes. You can reopen saved dashboards any time from your dashboards list." }),
+        /* @__PURE__ */ l.jsxs("div", { className: "leave-actions", children: [
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => d("leave_resolve", { choice: "cancel" }, "Cancelling…", !0), children: "Cancel" }),
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost danger", onClick: () => d("leave_resolve", { choice: "discard" }, "Continuing…"), children: "Discard changes" }),
+          /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn", onClick: () => d("leave_resolve", { choice: "save" }, "Saving, then continuing…"), children: e.leave.saved ? "Save and continue" : "Save as draft and continue" })
+        ] })
+      ] }) }),
     r && /* @__PURE__ */ l.jsxs(
       _p,
       {
@@ -9646,6 +10160,9 @@ function ValTab({ data: e, send: t, onTile: n0, onPage: s }) {
         /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", disabled: !!job, onClick: () => t("validate_all", { force: !0 }, "Re-checking every tile…", !0), children: "Re-run everything" })
       ] })
     ] }),
+    job && /* @__PURE__ */ l.jsx("div", { className: "vt-prog", children: /* @__PURE__ */ l.jsx("i", { style: { width: `${Math.round(100 * (job.tiles_done || 0) / Math.max(1, job.tiles_total || 1))}%` } }) }),
+    !job && e.validation_fresh && e.validation_fresh.state === "stale" && /* @__PURE__ */ l.jsxs("div", { className: "vgate need", children: [/* @__PURE__ */ l.jsx("b", { children: "The last check is out of date. Click Validate all pages." }), /* @__PURE__ */ l.jsx("ul", { children: e.validation_fresh.reasons.map((x, k) => /* @__PURE__ */ l.jsx("li", { children: x }, k)) })] }),
+    !job && e.validation_fresh && e.validation_fresh.state === "none" && /* @__PURE__ */ l.jsx("div", { className: "vgate need", children: /* @__PURE__ */ l.jsx("b", { children: "Not validated yet. Click Validate all pages: it runs in the background while you keep working on the dashboard." }) }),
     /* @__PURE__ */ l.jsxs("div", { className: "vt-grid", children: [
       /* @__PURE__ */ l.jsxs("section", { className: "vt-card", children: [
         /* @__PURE__ */ l.jsx("h3", { children: "Check matrix" }),
@@ -9987,7 +10504,7 @@ function UatInbox({ data: e, send: t, kind, onClose }) {
   ] });
 }
 /* ---- Data alerts (21 Oct): Alert me… form (plain English + options) and My alerts ---- */
-const AL_RULES = [["threshold", "Above / below a value"], ["change", "Changes vs before"], ["plan", "Behind / ahead of plan"], ["freshness", "No new data"]];
+const AL_RULES = [["threshold", "Above / below a value"], ["change", "Changes vs before"], ["plan", "Behind / ahead of plan"], ["freshness", "No new data"], ["unusual", "Unusual (vs its normal range)"]];
 const AL_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const AL_STATUS = { fired: "Fired", ok: "OK", no_data: "No data", error: "Error" };
 function alTz() {
@@ -10037,7 +10554,7 @@ function AlertForm({ data: e, send: t, onClose: oc, pending: pd }) {
     d.sentence && /* @__PURE__ */ l.jsxs("div", { className: "al-sentence", children: [/* @__PURE__ */ l.jsx("span", { children: "Alert me when" }), /* @__PURE__ */ l.jsx("b", { children: d.sentence }), /* @__PURE__ */ l.jsx("small", { children: `${d.schedule_text} · to ${(sp.recipients || []).join(", ") || "nobody yet"}` })] }),
     /* @__PURE__ */ l.jsxs("div", { className: "al-grid", children: [
       /* @__PURE__ */ l.jsxs("label", { children: ["Metric", /* @__PURE__ */ l.jsxs("select", { value: sp.metric || "", onChange: (x) => push({ metric: x.target.value }), children: [/* @__PURE__ */ l.jsx("option", { value: "", children: "Choose…" }), o.metrics.map((m) => /* @__PURE__ */ l.jsx("option", { value: m.id, children: m.label }, m.id))] })] }),
-      rule !== "freshness" && /* @__PURE__ */ l.jsxs("label", { children: ["Period", /* @__PURE__ */ l.jsx("select", { value: sp.grain || "day", onChange: (x) => push({ grain: x.target.value }), children: [["day", "Latest day"], ["week", "Latest week"], ["month", "Latest month"]].map(([k, v]) => /* @__PURE__ */ l.jsx("option", { value: k, children: v }, k)) })] }),
+      rule !== "freshness" && /* @__PURE__ */ l.jsxs("label", { children: ["Period", /* @__PURE__ */ l.jsx("select", { value: sp.grain || "day", onChange: (x) => push({ grain: x.target.value }), children: [["day", "Latest day"], ["week", "Latest week"], ["month", "Latest month"]].filter(([k]) => !o.grains || o.grains.includes(k)).map(([k, v]) => /* @__PURE__ */ l.jsx("option", { value: k, children: v }, k)) })] }),
       /* @__PURE__ */ l.jsxs("div", { className: "al-wide", children: [
         /* @__PURE__ */ l.jsx("span", { className: "al-lbl", children: "Filters" }),
         /* @__PURE__ */ l.jsxs("div", { className: "al-chips", children: [
@@ -10076,6 +10593,15 @@ function AlertForm({ data: e, send: t, onClose: oc, pending: pd }) {
             /* @__PURE__ */ l.jsx("span", { children: "% or more" }),
             /* @__PURE__ */ l.jsx("select", { value: sp.plan_dir || "below", onChange: (x) => push({ plan_dir: x.target.value }), children: [["below", "below plan"], ["above", "above plan"]].map(([k, v]) => /* @__PURE__ */ l.jsx("option", { value: k, children: v }, k)) })
           ] }),
+          rule === "unusual" && /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+            /* @__PURE__ */ l.jsx("span", { children: "goes" }),
+            /* @__PURE__ */ l.jsx("select", { value: sp.direction || "either", onChange: (x) => push({ direction: x.target.value }), children: [["either", "outside"], ["up", "above"], ["down", "below"]].map(([k, v]) => /* @__PURE__ */ l.jsx("option", { value: k, children: v }, k)) }),
+            /* @__PURE__ */ l.jsx("span", { children: "its normal range for" }),
+            /* @__PURE__ */ l.jsxs("select", { value: sp.by || "", onChange: (x) => push({ by: x.target.value }), children: [/* @__PURE__ */ l.jsx("option", { value: "", children: "the total" }), o.dims.filter((x) => (x.values || []).length <= 50).map((x) => /* @__PURE__ */ l.jsx("option", { value: x.id, children: `the total or any ${x.label}` }, x.id))] }),
+            /* @__PURE__ */ l.jsx("span", { children: "·" }),
+            /* @__PURE__ */ l.jsx("select", { value: sp.sensitivity || "normal", onChange: (x) => push({ sensitivity: x.target.value }), children: [["normal", "normal sensitivity"], ["high", "high sensitivity"]].map(([k, v]) => /* @__PURE__ */ l.jsx("option", { value: k, children: v }, k)) }),
+            /* @__PURE__ */ l.jsx("small", { className: "muted al-help", children: "Normal range = the typical level and spread of the 13 weeks before the last 4 (days: same weekday over 8 weeks; months: 12 months before the last 2), worked out from the data, so a build-up over recent weeks still shows. No number to set." })
+          ] }),
           rule === "freshness" && /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
             /* @__PURE__ */ l.jsx("span", { children: "has no new data for more than" }),
             /* @__PURE__ */ l.jsx("input", { type: "number", min: 1, className: "al-num", defaultValue: sp.days ?? 1, onBlur: (x) => push({ days: x.target.value }) }, "d" + (sp.days ?? 1)),
@@ -10104,7 +10630,13 @@ function AlertForm({ data: e, send: t, onClose: oc, pending: pd }) {
     d.issues && d.issues.length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "al-issues", children: [/* @__PURE__ */ l.jsx("b", { children: "To finish this alert:" }), /* @__PURE__ */ l.jsx("ul", { children: d.issues.map((x, k) => /* @__PURE__ */ l.jsx("li", { children: x }, k)) })] }),
     pv && /* @__PURE__ */ l.jsxs("div", { className: `al-preview ${pv.status}`, children: [
       /* @__PURE__ */ l.jsx("b", { children: pv.status === "fired" ? "Would fire now" : pv.status === "ok" ? "Would not fire now" : AL_STATUS[pv.status] || pv.status }),
-      /* @__PURE__ */ l.jsx("span", { children: ` · ${pv.headline ? pv.headline + ". " : ""}${pv.detail || ""}` })
+      /* @__PURE__ */ l.jsx("span", { children: ` · ${pv.headline ? pv.headline + ". " : ""}${rule === "unusual" ? "" : pv.detail || ""}` }),
+      rule === "unusual" && (pv.series || []).length > 0 && /* @__PURE__ */ l.jsx("table", { className: "al-range", children: /* @__PURE__ */ l.jsx("tbody", { children: pv.series.map((r) => /* @__PURE__ */ l.jsxs("tr", { className: r.unusual ? "bad" : "", children: [
+        /* @__PURE__ */ l.jsx("td", { children: r.segment === "(All)" ? "Total" : r.segment }),
+        /* @__PURE__ */ l.jsx("td", { children: r.value_text }),
+        /* @__PURE__ */ l.jsx("td", { className: "muted", children: `normal ${r.range_text}` }),
+        /* @__PURE__ */ l.jsx("td", { children: r.unusual ? "Unusual" : "" })
+      ] }, r.segment)) }) })
     ] }),
     pd && String(pd.type || "").startsWith("alert_") && /* @__PURE__ */ l.jsxs("div", { className: "al-fb busy", children: [/* @__PURE__ */ l.jsx("span", { className: "spinner dark" }), pd.label || "Working…"] }),
     !pd && e.error && /* @__PURE__ */ l.jsx("div", { className: "al-fb err", children: `⚠ ${e.error}` }),
@@ -10144,7 +10676,18 @@ function AlertsPanel({ data: e, send: t }) {
       e.spec && /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost small", onClick: () => t("alert_new", { tz: alTz() }, "Opening…"), children: "+ New alert" }),
       a.items.length > 0 && /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn small", onClick: () => t("alert_run", {}, "Checking every alert now…"), children: "Check all now" })
     ] }),
-    !a.items.length && /* @__PURE__ */ l.jsx("div", { className: "uat-empty", children: "No alerts yet. On a dashboard, open a tile's ⋯ menu and choose 🔔 Alert me…" }),
+    (a.templates || []).length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "al-sugg", children: [
+      /* @__PURE__ */ l.jsxs("div", { className: "al-sugg-h", children: [/* @__PURE__ */ l.jsx("b", { children: `Suggested alerts for ${a.company || "this workspace"}` }), /* @__PURE__ */ l.jsx("small", { children: "From the business alert library: each opens pre-filled, you review the recipients and save." })] }),
+      /* @__PURE__ */ l.jsx("div", { className: "al-sugg-g", children: a.templates.map((x) => /* @__PURE__ */ l.jsxs("div", { className: `al-sugg-c ${x.set_up ? "done" : ""}`, children: [
+        /* @__PURE__ */ l.jsxs("div", { className: "al-sugg-t", children: [/* @__PURE__ */ l.jsx("span", { className: `al-sev ${String(x.severity).toLowerCase()}`, children: x.severity }), /* @__PURE__ */ l.jsx("b", { children: x.title })] }),
+        /* @__PURE__ */ l.jsx("p", { children: x.note }),
+        /* @__PURE__ */ l.jsxs("div", { className: "al-sugg-f", children: [
+          /* @__PURE__ */ l.jsx("small", { children: `${x.metric_label} · owner: ${x.owner}` }),
+          x.set_up ? /* @__PURE__ */ l.jsx("span", { className: "al-sugg-ok", children: "✓ Alert exists" }) : /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn small", onClick: () => t("alert_template", { id: x.id, tz: alTz() }, "Opening the alert…"), children: "Set up" })
+        ] })
+      ] }, x.id)) })
+    ] }),
+    !a.items.length && /* @__PURE__ */ l.jsx("div", { className: "uat-empty", children: "No alerts yet. Use a suggested alert above, or on a dashboard open a tile's ⋯ menu and choose 🔔 Alert me…" }),
     a.items.map((x) => {
       const st = !x.active ? "paused" : x.last_status || "new", runs = (a.runs || {})[x.alert_id];
       return /* @__PURE__ */ l.jsxs("div", { className: "al-item", children: [
@@ -10191,9 +10734,37 @@ function UatDownload({ d: e, send: t }) {
   }, [e && e.id]);
   return null;
 }
-function ValBadge({ v: e, stale: t, onOpen: n }) {
+/* ---- Validation on demand (21 Oct): header chip, finished banner, publish gate ---- */
+function ValChip({ f, onOpen }) {
+  if (!f) return null;
+  const st = f.state || "none";
+  const txt = st === "fresh" ? `✓ Verified ${String(f.at || "").slice(11, 16)}` : st === "running" ? `◌ Validating… ${f.done || 0}/${f.total || 0}` : st === "stale" ? "⚠ Changed since check" : "Not validated";
+  return /* @__PURE__ */ l.jsx("button", { type: "button", className: `vchip ${st}`, title: (f.reasons || []).join("\n") || "Open the Validation tab", onClick: onOpen, children: txt });
+}
+function ValDone({ d, onOpen }) {
+  const [gone, setGone] = P.useState("");
+  if (!d || gone === d.id) return null;
+  return /* @__PURE__ */ l.jsxs("div", { className: `vdone ${d.status}`, role: "status", children: [
+    /* @__PURE__ */ l.jsx("span", { children: d.status === "pass" || d.status === "accepted" ? "✓" : "!" }),
+    /* @__PURE__ */ l.jsx("b", { children: d.text }),
+    /* @__PURE__ */ l.jsx("button", { type: "button", className: "uat-link", onClick: () => (onOpen(), setGone(d.id)), children: "View report" }),
+    /* @__PURE__ */ l.jsx("button", { type: "button", className: "vdone-x", "aria-label": "Dismiss", onClick: () => setGone(d.id), children: "×" })
+  ] });
+}
+function ValGate({ data: e, send: t }) {
+  const f = e.validation_fresh || {}, st = f.state || "none";
+  if (st === "fresh") return /* @__PURE__ */ l.jsx("div", { className: "vgate ok", children: `✓ Validated ${String(f.at || "").slice(11, 16)} on data through ${f.data_through || "today"}: every tile checked after its last change.` });
+  if (st === "running") return /* @__PURE__ */ l.jsxs("div", { className: "vgate run", children: [/* @__PURE__ */ l.jsx("span", { className: "spinner dark" }), `Validating… ${f.done || 0} of ${f.total || 0} tiles. Publish unlocks when it finishes.`] });
+  return /* @__PURE__ */ l.jsxs("div", { className: "vgate need", children: [
+    /* @__PURE__ */ l.jsx("b", { children: "Validate before publishing." }),
+    /* @__PURE__ */ l.jsx("ul", { children: (f.reasons || ["Not validated yet."]).map((x, k) => /* @__PURE__ */ l.jsx("li", { children: x }, k)) }),
+    (f.broken || []).length ? /* @__PURE__ */ l.jsx("small", { children: "Tiles that fail to run must be fixed (or removed) first: open the tile and check its fields." }) : /* @__PURE__ */ l.jsxs("div", { className: "al-row", children: [/* @__PURE__ */ l.jsx("button", { type: "button", className: "btn small", onClick: () => t("validate_all", {}, "Validating all pages…", !0), children: "Validate now" }), /* @__PURE__ */ l.jsx("small", { children: "Usually 10–30 seconds. Mismatches do not block; they need the sign-off reason." })] })
+  ] });
+}
+function ValBadge({ v: e, stale: t, changed: ch, onOpen: n }) {
   if (t) return /* @__PURE__ */ l.jsxs("span", { className: "vbadge checking", title: "Checking these numbers against the base tables", children: [/* @__PURE__ */ l.jsx("i", { className: "vspin" }), "Checking"] });
   if (!e) return null;
+  if (ch) return /* @__PURE__ */ l.jsx("span", { className: "vbadge changed", title: "This tile changed after the last validation. Validate again on the Validation tab.", children: "Not checked since change" });
   const es = e.status_eff || e.status, tip = (e.checks || []).map((c) => `${c.id} ${c.name}: ${c.label} — ${c.summary}`).join("\n") + (e.resolution ? `\n\nAccepted: ${e.resolution.reason}` : "");
   return /* @__PURE__ */ l.jsxs("button", { type: "button", className: `vbadge ${es}`, title: tip + "\n\nClick for the evidence", onClick: n, children: [/* @__PURE__ */ l.jsx("b", { children: VAL_ICON[es] }), VAL_TEXT[es]] });
 }
@@ -10347,7 +10918,7 @@ function Kp({ data: e, onDrawer: t }) {
   return /* @__PURE__ */ l.jsxs("header", { className: "top", children: [
     /* @__PURE__ */ l.jsxs("div", { className: "crumbs", children: [
       e.source ? /* @__PURE__ */ l.jsx("span", { className: "pill", title: e.source.fqn, children: $e(String(e.source.name).replace(/[_ ](SV|SEMANTIC[_ ]VIEW)$/i, "")) }) : /* @__PURE__ */ l.jsx("span", { className: "muted", children: "No data selected" }),
-      e.step !== "source" && e.audience && /* @__PURE__ */ l.jsx("span", { className: "pill soft", children: Pn[e.audience] }),
+      e.step !== "source" && e.audience && /* @__PURE__ */ l.jsx("span", { className: "pill soft", children: (e.spec && e.spec.persona && e.spec.persona.label ? e.spec.persona.label : (e.draft && e.draft.spec && e.draft.spec.persona && e.draft.spec.persona.label ? e.draft.spec.persona.label : Pn[e.audience])) }),
       n && /* @__PURE__ */ l.jsxs("span", { className: "pill soft", children: [
         "as of ",
         n.max_date,
@@ -10381,6 +10952,7 @@ function Xp({ data: e, send: t }) {
       /* @__PURE__ */ l.jsx("h3", { children: "Saved dashboards" }),
       /* @__PURE__ */ l.jsx("div", { className: "cards", children: e.dashboards.map((d) => /* @__PURE__ */ l.jsxs("button", { type: "button", className: "card link-card", onClick: () => t("open_dashboard", { dashboard_id: d.dashboard_id }), children: [
         /* @__PURE__ */ l.jsx("b", { children: d.name }),
+        /* @__PURE__ */ l.jsx(AttnPills, { d: attnOf(e, d.dashboard_id) }),
         /* @__PURE__ */ l.jsxs("small", { children: [
           Pn[d.audience],
           " · v",
@@ -10681,9 +11253,11 @@ function $p({ data: e, send: t, ctx: n, pending: s }) {
       /* @__PURE__ */ l.jsx("b", { children: e.agent.display_name }),
       /* @__PURE__ */ l.jsx("small", { className: "mono", children: e.agent.fqn }),
       /* @__PURE__ */ l.jsxs("small", { children: [
-        ["Cortex Analyst", e.agent.has_search && "Cortex Search (documents)", e.agent.has_actions && "log_decision tool"].filter(Boolean).join(" + "),
-        " over ",
-        e.source.fqn
+        "Answers from governed data (Cortex Analyst over ",
+        e.source.fqn,
+        ")",
+        e.agent.has_search ? ". Uses your documents only when they help." : ".",
+        e.agent.has_actions ? " Can log decisions." : ""
       ] })
     ] }) : /* @__PURE__ */ l.jsxs("div", { className: "agent-id", children: [
       /* @__PURE__ */ l.jsx("b", { children: "Cortex Agent" }),
@@ -10693,7 +11267,7 @@ function $p({ data: e, send: t, ctx: n, pending: s }) {
       (e.chat || []).map((o, d) => {
         var m, p, v, j;
         return /* @__PURE__ */ l.jsx("div", { className: `msg ${o.role}`, children: o.role === "user" ? /* @__PURE__ */ l.jsx("div", { className: "bubble", children: o.text }) : /* @__PURE__ */ l.jsxs("div", { className: "bubble", children: [
-          o.error ? /* @__PURE__ */ l.jsx("div", { className: "alert error small", children: o.error }) : /* @__PURE__ */ l.jsx("div", { className: "answer", children: o.text }),
+          o.error ? /* @__PURE__ */ l.jsx("div", { className: "alert error small", children: o.error }) : /* @__PURE__ */ l.jsx(AnsMd, { text: o.text }),
           (m = o.tables) == null ? void 0 : m.map((y, C) => /* @__PURE__ */ l.jsxs("table", { className: "table compact", children: [
             /* @__PURE__ */ l.jsx("thead", { children: /* @__PURE__ */ l.jsx("tr", { children: y.columns.map((k) => /* @__PURE__ */ l.jsx("th", { children: k }, k)) }) }),
             /* @__PURE__ */ l.jsx("tbody", { children: y.rows.slice(0, 10).map((k, c) => /* @__PURE__ */ l.jsx("tr", { children: k.map((h, f) => /* @__PURE__ */ l.jsx("td", { children: String(h) }, f)) }, c)) })
@@ -11023,3 +11597,413 @@ function rm(e) {
 export {
   rm as default
 };
+
+/* ---- Workspaces (22 Oct): "Choose your workspace" page + switcher under the brand ---- */
+function DomPicker({ data: e, send: t, pending: n }) {
+  const ds = e.domains || [], cur = e.domain_chosen ? e.domain : "";
+  const plural = (k, w) => `${k} ${w}${k === 1 ? "" : "s"}`;
+  return /* @__PURE__ */ l.jsxs("section", { className: "view dom-pick", children: [
+    /* @__PURE__ */ l.jsx("h1", { children: "Choose your workspace" }),
+    /* @__PURE__ */ l.jsx("p", { className: "dom-sub", children: "Each workspace has its own data, dashboards, layouts and Cortex Agent. You can switch any time from the menu on the left." }),
+    /* @__PURE__ */ l.jsx("div", { className: "dom-cards", children: ds.map((c) => /* @__PURE__ */ l.jsxs("div", { className: `dom-card ${c.id === cur ? "sel" : ""} ${c.ready ? "" : "soon"}`, style: c.id === cur ? { borderColor: c.accent } : null, children: [
+      c.id === cur && /* @__PURE__ */ l.jsx("span", { className: "dom-last", children: "Current" }),
+      !c.ready && /* @__PURE__ */ l.jsx("span", { className: "dom-last soon", children: "Coming soon" }),
+      /* @__PURE__ */ l.jsx("div", { className: "dom-ic", style: { background: c.soft }, children: c.icon }),
+      /* @__PURE__ */ l.jsx("h3", { children: c.name }),
+      /* @__PURE__ */ l.jsx("div", { className: "dom-co", children: [c.company, c.tagline].filter(Boolean).join(" · ") }),
+      /* @__PURE__ */ l.jsx("p", { children: c.blurb }),
+      /* @__PURE__ */ l.jsx("div", { className: "dom-tags", children: (c.metrics || []).map((m) => /* @__PURE__ */ l.jsx("span", { className: "dom-tag", children: m }, m)) }),
+      /* @__PURE__ */ l.jsx("div", { className: "dom-stats", children: c.ready ? /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+        /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: c.n_dashboards }), c.n_dashboards === 1 ? " dashboard" : " dashboards"] }),
+        c.n_reviews > 0 && /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: c.n_reviews }), c.n_reviews === 1 ? " open review" : " open reviews"] }),
+        c.n_alerts > 0 && /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: c.n_alerts }), c.n_alerts === 1 ? " alert" : " alerts"] }),
+        c.n_dashboards === 0 && /* @__PURE__ */ l.jsx("span", { children: `${plural(c.n_datasets, "dataset")} · start from suggested ideas` })
+      ] }) : /* @__PURE__ */ l.jsx("span", { children: "Data is being set up. It opens here as soon as its semantic view exists." }) }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "dom-go", disabled: !c.ready || !!n, style: c.ready ? { background: c.accent } : null,
+        onClick: () => t("set_domain", { domain: c.id }, `Opening ${c.name}…`), children: c.ready ? `Open ${c.name} →` : "Coming soon" })
+    ] }, c.id)) }),
+    /* @__PURE__ */ l.jsx("p", { className: "dom-foot", children: "All demo data is fictional and generated in Snowflake. Your choice is remembered: next time you go straight to your workspace." })
+  ] });
+}
+function DomSwitch({ data: e, send: t }) {
+  const [o, so] = P.useState(!1), ds = e.domains || [], c = e.domain_info;
+  if (!c || ds.length < 2) return null;
+  return /* @__PURE__ */ l.jsxs("div", { className: "dom-sw", children: [
+    /* @__PURE__ */ l.jsxs("button", { type: "button", className: "dom-chip", title: "Switch workspace", onClick: () => so(!o), children: [
+      /* @__PURE__ */ l.jsx("span", { className: "dom-chip-ic", style: { background: c.soft }, children: c.icon }),
+      /* @__PURE__ */ l.jsxs("span", { className: "dom-chip-t", children: [/* @__PURE__ */ l.jsx("b", { children: c.name }), /* @__PURE__ */ l.jsx("small", { children: c.company })] }),
+      /* @__PURE__ */ l.jsx("span", { className: "dom-caret", children: o ? "▴" : "▾" })
+    ] }),
+    o && /* @__PURE__ */ l.jsxs("div", { className: "dom-menu", children: [
+      ds.map((d) => /* @__PURE__ */ l.jsxs("button", { type: "button", className: `dom-mi ${d.id === c.id ? "on" : ""}`, disabled: !d.ready, onClick: () => {
+        so(!1), d.id !== c.id && t("set_domain", { domain: d.id }, `Opening ${d.name}…`);
+      }, children: [
+        /* @__PURE__ */ l.jsx("span", { className: "dom-mi-ic", children: d.icon }),
+        /* @__PURE__ */ l.jsxs("span", { children: [
+          /* @__PURE__ */ l.jsxs("b", { children: [d.name, d.id === c.id ? " ✓" : ""] }),
+          /* @__PURE__ */ l.jsx("small", { children: d.ready ? `${d.company} · ${d.n_dashboards} dashboard${d.n_dashboards === 1 ? "" : "s"}` : "Coming soon" })
+        ] })
+      ] }, d.id)),
+      e.spec && /* @__PURE__ */ l.jsx("div", { className: "dom-warn", children: "Switching closes the open dashboard. Save it first." }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "dom-mi all", onClick: () => {
+        so(!1), t("show_domains", {}, "Opening…");
+      }, children: "All workspaces…" })
+    ] })
+  ] });
+}
+
+/* ---- Workspace mode bar (22 Oct): Dashboard | Validation, with live status and one primary action ---- */
+function ModeBar({ data: e, vt, setVt, send: t, pages, tiles }) {
+  const f = e.validation_fresh || {}, st = f.state || "none", ov = e.validation_overview || {}, os = ov.status || "none";
+  const at = String(f.at || "").slice(11, 16), open = (ov.issues || []).filter((x) => x.status === "review" || x.status === "mismatch").length;
+  const tone = st === "running" ? "run" : st === "fresh" ? ((ov.issues || []).some((x) => x.status === "mismatch") ? "bad" : open ? "warn" : "ok") : st === "stale" ? "warn" : "none";
+  const badge = st === "running" ? `Validating ${f.done || 0}/${f.total || 0}` : st === "fresh" ? (open ? `${open} to review` : `Verified ${at}`) : st === "stale" ? "Changed since check" : "Not validated";
+  const sub = st === "running" ? "Checking every number against the base tables" : st === "fresh" ? `Last run ${at} · data through ${f.data_through || "today"}` : st === "stale" ? ((f.reasons || [])[0] || "The dashboard changed after the last check") : "Re-derive every number from the base tables";
+  const run = () => t("validate_all", {}, "Validating all pages in the background…", !0);
+  return /* @__PURE__ */ l.jsxs("div", { className: "modebar", role: "tablist", "aria-label": "Workspace", children: [
+    /* @__PURE__ */ l.jsxs("button", { type: "button", role: "tab", "aria-selected": !vt, className: `mode-btn ${vt ? "" : "on"}`, onClick: () => setVt(!1), children: [
+      /* @__PURE__ */ l.jsx("span", { className: "mode-ic", "aria-hidden": "true", children: "▦" }),
+      /* @__PURE__ */ l.jsxs("span", { className: "mode-t", children: [/* @__PURE__ */ l.jsx("b", { children: "Dashboard" }), /* @__PURE__ */ l.jsx("small", { children: `${pages} page${pages === 1 ? "" : "s"} · ${tiles} tiles` })] })
+    ] }),
+    /* @__PURE__ */ l.jsxs("button", { type: "button", role: "tab", "aria-selected": !!vt, className: `mode-btn val ${vt ? "on" : ""}`, onClick: () => setVt(!0), children: [
+      /* @__PURE__ */ l.jsx("span", { className: `mode-ic shield ${tone}`, "aria-hidden": "true", children: st === "running" ? /* @__PURE__ */ l.jsx("span", { className: "spinner" }) : tone === "ok" ? "✓" : tone === "bad" ? "✕" : tone === "warn" ? "!" : "?" }),
+      /* @__PURE__ */ l.jsxs("span", { className: "mode-t", children: [/* @__PURE__ */ l.jsx("b", { children: "Validation" }), /* @__PURE__ */ l.jsx("small", { children: sub })] }),
+      /* @__PURE__ */ l.jsx("span", { className: `mode-badge ${tone}`, children: badge })
+    ] }),
+    /* @__PURE__ */ l.jsx("div", { className: "mode-cta", children: st === "running" ? /* @__PURE__ */ l.jsxs("div", { className: "mode-prog", children: [
+      /* @__PURE__ */ l.jsx("i", { style: { width: `${f.total ? Math.round(100 * (f.done || 0) / f.total) : 5}%` } }),
+      /* @__PURE__ */ l.jsx("span", { children: "Keep working: results appear when done" })
+    ] }) : st === "fresh" ? (vt ? /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => setVt(!1), children: "← Back to dashboard" }) : /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => setVt(!0), children: open ? "Review findings" : "View report" })) : /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn mode-go", onClick: run, children: st === "stale" ? "Re-validate" : "Validate now" }) })
+  ] });
+}
+
+/* ---- click a value to ask (27 Oct): click a bar, row, cell or number on any tile -> ask the domain's Cortex Agent */
+const ASK_SKIP = new Set(["kind", "unit", "mode", "display", "better", "finding", "headline", "title", "question", "metric_label", "metric2_label", "metric2_kind", "dimension_label", "current_label", "base_label", "prior_label", "filter_note", "compare_label", "span_label", "status", "direction", "type", "grain", "format", "color", "note", "detail", "message", "sql", "error", "id", "key", "period", "date", "x_label", "y_label"]);
+function askLabels(d) {
+  const out = new Set();
+  const ok = (s) => typeof s === "string" && s.length > 1 && s.length <= 60 && !/^[-+$\d.,%\s]+$/.test(s) && !/[.!?]$/.test(s) && !/^[a-z0-9_]+$/.test(s);
+  const walk = (v, depth) => {
+    if (v == null || depth > 4) return;
+    if (Array.isArray(v)) return void v.slice(0, 300).forEach((x) => typeof x === "string" ? ok(x) && out.add(x) : walk(x, depth + 1));
+    if (typeof v === "object") Object.entries(v).forEach(([k, x]) => {
+      if (k.startsWith("_") || ASK_SKIP.has(k)) return;
+      if (typeof x === "string") ok(x) && out.add(x);
+      else if (x && typeof x === "object") { ok(k) && out.add(k); walk(x, depth + 1); }
+      else if (typeof x === "number" && ok(k)) out.add(k);
+    });
+  };
+  walk(d, 0);
+  return [...out].sort((a, b) => b.length - a.length);
+}
+const ASK_DATE = /^(wk|week|q[1-4]\b)|^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \d|^\d{4}(-\d\d)?|\b(19|20)\d\d$/i;
+const ASK_NUM = /[-+]?\$?\d[\d,]*(?:\.\d+)?\s?(?:%|pts?|[KMB]\b)?/;
+function AskWrap({ data: d, spec: c, ctx: n, view: v, model: md, dash, children }) {
+  const [pop, setPop] = P.useState(null), ref = P.useRef(null);
+  const labels = P.useMemo(() => askLabels(d), [d]);
+  const ml = d && (d.metric_label || d.label);
+  const metric = ml && !String(ml).includes(", ") ? ml : c.title;
+  const dimL = (d && d.dimension_label) || "";
+  const period = (d && (d.current_label || d.period_label)) || "";
+  const flt = Object.entries((v && v.filters) || {}).filter(([, xs]) => (xs || []).length).map(([k, xs]) => {
+    const dl = ((md && md.dimensions) || []).find((x) => x.id === k);
+    return `${dl ? dl.label : String(k).split(".").pop()} = ${xs.join(", ")}`;
+  }).join("; ");
+  const onClick = (ev) => {
+    const tg = ev.target;
+    if (!tg || tg.closest("button, a, input, select, textarea, .ask-pop, [data-noask]")) return;
+    const root = ref.current;
+    let el = tg, member = null, value = null;
+    for (let k = 0; el && el !== root && k < 6; k++, el = el.parentElement) {
+      const txt = ((el.textContent || "").trim()).slice(0, 240);
+      if (!txt) continue;
+      const cut = txt.includes("…");                                   // long labels are shortened on charts ("Near-Prime Revolv…")
+      const hits = labels.filter((lb) => txt.includes(lb) || (cut && lb.length > 12 && txt.includes(lb.slice(0, 12))));
+      if (hits.length > 1) {                                            // a row holds a member and dates/periods: keep the member
+        const nd = hits.filter((h) => !ASK_DATE.test(h));
+        nd.length && nd.length < hits.length && hits.splice(0, hits.length, ...nd);
+      }
+      if (hits.length === 1 || (hits.length > 1 && (k === 0 || hits.every((h) => hits[0].includes(h))))) {
+        member = hits[0];
+        for (let up = el, j = 0; up && up !== root && j < 3 && !value; j++, up = up.parentElement) {
+          const t2 = (up.textContent || "").trim();                       // the value sits next to the label in its row
+          if (t2.length > 90 || labels.filter((lb) => t2.includes(lb) && !member.includes(lb)).length) break;
+          const m = t2.replace(member, " ").replace(/\S*…/g, " ").match(ASK_NUM);
+          value = m ? m[0].trim() : null;
+        }
+        break;
+      }
+      if (hits.length > 1) break;
+      if (k === 0 && !value) { const m = txt.match(ASK_NUM); value = m && txt.length < 40 ? m[0].trim() : null; }
+    }
+    if (!member && !value) return;
+    const r = root.getBoundingClientRect();
+    setPop({ member, value, x: Math.max(8, Math.min(ev.clientX - r.left, r.width - 330)), y: ev.clientY - r.top + 8 });
+  };
+  const kpiNames = new Set(((d && d.items) || []).map((x) => x && x.label).filter(Boolean));
+  const what = pop ? (pop.member ? (kpiNames.has(pop.member) ? pop.member : `${metric} for ${dimL ? dimL + " " : ""}${pop.member}`) : metric) : "";
+  const tail = () => `${period ? ` Period: ${period}.` : ""}${flt ? ` Dashboard filters: ${flt}.` : ""}${dash ? ` (Dashboard: ${dash}, tile: ${c.title}.)` : ""}`;
+  const go = (q) => (n.ask(q + tail()), setPop(null));
+  const [txt, setTxt] = P.useState("");
+  return /* @__PURE__ */ l.jsxs("div", { className: "ask-wrap", ref, onClick, title: "Click a bar, row, cell or number to ask the Cortex Agent about it", children: [
+    children,
+    pop && /* @__PURE__ */ l.jsxs("div", { className: "ask-pop", style: { left: pop.x, top: pop.y }, onClick: (ev) => ev.stopPropagation(), children: [
+      /* @__PURE__ */ l.jsxs("div", { className: "ask-pop-head", children: [
+        /* @__PURE__ */ l.jsx("small", { children: "Ask the Cortex Agent about" }),
+        /* @__PURE__ */ l.jsx("button", { type: "button", className: "ask-x", "aria-label": "Close", onClick: () => setPop(null), children: "×" })
+      ] }),
+      /* @__PURE__ */ l.jsxs("b", { className: "ask-what", children: [what, pop.value ? /* @__PURE__ */ l.jsx("em", { children: ` · ${pop.value}` }) : null, period ? /* @__PURE__ */ l.jsx("span", { children: ` · ${period}` }) : null] }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "ask-q", onClick: () => go(`Why did ${what}${pop.value ? ` (${pop.value})` : ""} change?`), children: "Why did this change?" }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "ask-q", onClick: () => go(`What is driving ${what}${pop.value ? ` (${pop.value})` : ""}? Break it down by its main drivers.`), children: "What's driving it?" }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "ask-q", onClick: () => go(`How does ${what}${pop.value ? ` (${pop.value})` : ""} compare with last year${pop.member && dimL ? ` and with the other ${dimL.toLowerCase()} values` : ""}?`), children: pop.member ? "Compare with last year and the others" : "Compare with last year" }),
+      /* @__PURE__ */ l.jsxs("div", { className: "ask-own", children: [
+        /* @__PURE__ */ l.jsx("input", { value: txt, placeholder: "Or type your own question…", onChange: (ev) => setTxt(ev.target.value), onKeyDown: (ev) => { ev.key === "Enter" && txt.trim() && (go(`About ${what}${pop.value ? ` (${pop.value})` : ""}: ${txt.trim()}`), setTxt("")); } }),
+        /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn small", disabled: !txt.trim(), onClick: () => (go(`About ${what}${pop.value ? ` (${pop.value})` : ""}: ${txt.trim()}`), setTxt("")), children: "Ask" })
+      ] })
+    ] })
+  ] });
+}
+
+/* ---- agent answers: light markdown (bold, bullets, headings), wrapped (27 Oct) */
+function AnsMd({ text }) {
+  const inline = (t, k) => String(t).split(/(\*\*[^*]+\*\*)/g).map((x, i) => x.startsWith("**") && x.endsWith("**") && x.length > 4 ? /* @__PURE__ */ l.jsx("b", { children: x.slice(2, -2) }, k + "-" + i) : x);
+  const blocks = [];
+  let list = null;
+  String(text || "").split(/\r?\n/).forEach((ln, i) => {
+    const m = ln.match(/^\s*(?:[-*\u2022]|\d+[.)])\s+(.*)$/);
+    if (m) {
+      list || blocks.push(list = { list: [] });
+      list.list.push(m[1]);
+      return;
+    }
+    list = null;
+    const h = ln.match(/^\s*#{1,4}\s+(.*)$/);
+    ln.trim() ? blocks.push(h ? { h: h[1] } : { p: ln }) : blocks.push({ gap: !0 });
+  });
+  return /* @__PURE__ */ l.jsx("div", { className: "answer md", children: blocks.map((b, i) => b.list ? /* @__PURE__ */ l.jsx("ul", { children: b.list.map((x, j) => /* @__PURE__ */ l.jsx("li", { children: inline(x, `${i}-${j}`) }, j)) }, i) : b.h ? /* @__PURE__ */ l.jsx("b", { className: "md-h", children: inline(b.h, i) }, i) : b.gap ? /* @__PURE__ */ l.jsx("div", { className: "md-gap" }, i) : /* @__PURE__ */ l.jsx("p", { children: inline(b.p, i) }, i)) });
+}
+/* ---- Set me up (27 Oct): interview -> proposed dashboards + alerts to tick -> built drafts + Start-here brief ---- */
+function SetupPanel({ s, send, busy }) {
+  const qs = s.questions || [], last = qs.length - 1;
+  const [k, setK] = P.useState(0), [ans, setAns] = P.useState(() => ({ ...(s.answers || {}) }));
+  const initD = () => new Set((s.dashboards || []).filter((x) => x.checked).map((x) => x.i));
+  const initA = () => new Set((s.alerts || []).filter((x) => x.checked).map((x) => x.id));
+  const [ds, setDs] = P.useState(initD), [as, setAs] = P.useState(initA);
+  P.useEffect(() => { setDs(initD()), setAs(initA()); }, [s.stage, (s.dashboards || []).map((x) => x.title).join("|")]);
+  const close = () => send("setup_close", {}, "…", !0);
+  const tog = (set, fn, v) => { const n = new Set(set); n.has(v) ? n.delete(v) : n.add(v), fn(n); };
+  const q = qs[k] || {}, val = ans[q.id] || "";
+  const pick = (x) => setAns((a) => {
+    const cur = (a[q.id] || "").trim();
+    if (!q.multi) return { ...a, [q.id]: x };
+    const parts = cur ? cur.split(/;\s*/) : [];
+    return { ...a, [q.id]: parts.includes(x) ? parts.filter((y) => y !== x).join("; ") : [...parts, x].join("; ") };
+  });
+  const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (e) { return "UTC"; } })();
+  const per = s.persona || {};
+  let body;
+  if (s.stage === "interview") body = /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+    /* @__PURE__ */ l.jsx("div", { className: "su-steps", children: qs.map((x, i) => /* @__PURE__ */ l.jsx("span", { className: i === k ? "on" : i < k ? "done" : "" }, x.id)) }),
+    /* @__PURE__ */ l.jsx("h3", { className: "su-q", children: q.q }),
+    /* @__PURE__ */ l.jsx("textarea", { className: "su-input", rows: 2, autoFocus: !0, placeholder: q.hint || "", value: val, onChange: (ev) => setAns((a) => ({ ...a, [q.id]: ev.target.value })) }),
+    (q.suggest || []).length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "su-sugg", children: [
+      /* @__PURE__ */ l.jsx("span", { className: "muted small", children: q.multi ? "Suggestions from your data (pick any):" : "Suggestions from your data:" }),
+      (q.suggest || []).map((x) => /* @__PURE__ */ l.jsx("button", { type: "button", className: `pc-chip su-chip ${(val.split(/;\s*/)).includes(x) ? "on" : ""}`, onClick: () => pick(x), children: x }, x))
+    ] }),
+    k === 0 && /* @__PURE__ */ l.jsxs("div", { className: "su-quick", children: [
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "link", disabled: busy || !val.trim(), onClick: () => send("setup_quick", { role: val }, "Cortex is drafting your persona…"), children: "Just create my persona →" }),
+      /* @__PURE__ */ l.jsx("span", { className: "muted small", children: "Adds your persona and its ideas on Home, without building dashboards." })
+    ] }),
+    /* @__PURE__ */ l.jsxs("div", { className: "modal-foot su-foot", children: [
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => k ? setK(k - 1) : close(), children: k ? "← Back" : "Cancel" }),
+      k < last ? /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn", disabled: k === 0 && !val.trim(), onClick: () => setK(k + 1), children: val.trim() ? "Next →" : "Skip →" }) :
+        /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn", disabled: busy || !(ans.role || "").trim(), onClick: () => send("setup_propose", { answers: ans }, "Cortex is drafting your setup from your answers and this week's data…"), children: "Draft my setup ✦" })
+    ] })
+  ] });
+  else if (s.stage === "propose") body = /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+    /* @__PURE__ */ l.jsxs("div", { className: "persona-card su-per", children: [
+      /* @__PURE__ */ l.jsx("div", { className: "rd-eyebrow", children: "Your persona · drafted by Cortex from your answers (approve its guidance later on Home)" }),
+      /* @__PURE__ */ l.jsxs("div", { className: "pc-head", children: [/* @__PURE__ */ l.jsx("b", { children: per.label }), per.owns && /* @__PURE__ */ l.jsx("span", { children: `Owns: ${per.owns}` }), per.decides && /* @__PURE__ */ l.jsx("span", { children: `Decides: ${per.decides}` })] }),
+      (per.missing || []).length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "pc-note muted", children: [/* @__PURE__ */ l.jsx("b", { children: "Not in this data: " }), per.missing.join(" · ")] })
+    ] }),
+    /* @__PURE__ */ l.jsx("h4", { className: "su-h", children: "Dashboards I'd build for you" }),
+    /* @__PURE__ */ l.jsx("p", { className: "muted small", children: "Untick what you don't want. Each is saved as a draft you can review, edit and publish." }),
+    (s.dashboards || []).map((d) => /* @__PURE__ */ l.jsxs("label", { className: `su-row ${ds.has(d.i) ? "on" : ""}`, children: [
+      /* @__PURE__ */ l.jsx("input", { type: "checkbox", checked: ds.has(d.i), onChange: () => tog(ds, setDs, d.i) }),
+      /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: d.title }), d.why && /* @__PURE__ */ l.jsxs("small", { className: "su-why", children: ["Why: ", d.why] }), (d.metrics || []).length > 0 && /* @__PURE__ */ l.jsx("small", { className: "muted", children: d.metrics.join(" · ") })] })
+    ] }, d.i)),
+    (s.alerts || []).length > 0 && /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+      /* @__PURE__ */ l.jsx("h4", { className: "su-h", children: "Alerts to watch for you" }),
+      (s.alerts || []).map((a) => /* @__PURE__ */ l.jsxs("label", { className: `su-row ${as.has(a.id) ? "on" : ""}`, children: [
+        /* @__PURE__ */ l.jsx("input", { type: "checkbox", checked: as.has(a.id), onChange: () => tog(as, setAs, a.id) }),
+        /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: a.title }), /* @__PURE__ */ l.jsx("small", { className: "muted", children: a.metric + (a.note ? " · " + a.note : "") })] })
+      ] }, a.id))
+    ] }),
+    /* @__PURE__ */ l.jsxs("div", { className: "modal-foot su-foot", children: [
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: () => send("setup_start", {}, "…", !0), children: "← Change answers" }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn", disabled: busy || !(ds.size + as.size), onClick: () => send("setup_build", { dashboards: [...ds], alerts: [...as], tz }, `Building ${ds.size} dashboard${ds.size === 1 ? "" : "s"}…`), children: `Build ${ds.size} dashboard${ds.size === 1 ? "" : "s"}${as.size ? ` + ${as.size} alert${as.size === 1 ? "" : "s"}` : ""} →` })
+    ] })
+  ] });
+  else body = /* @__PURE__ */ l.jsxs(l.Fragment, { children: [
+    s.brief && /* @__PURE__ */ l.jsxs("div", { className: "su-brief", children: [/* @__PURE__ */ l.jsx("span", { className: "rd-eyebrow", children: "Start here" }), /* @__PURE__ */ l.jsx("p", { children: s.brief })] }),
+    (s.built || []).length > 0 && /* @__PURE__ */ l.jsx("h4", { className: "su-h", children: "Your dashboards (saved as drafts)" }),
+    (s.built || []).map((d) => /* @__PURE__ */ l.jsxs("div", { className: "su-row done", children: [
+      /* @__PURE__ */ l.jsx("span", { className: "su-ok", children: "✓" }),
+      /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: d.name }), d.why && /* @__PURE__ */ l.jsx("small", { className: "su-why", children: d.why })] }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn small", disabled: busy, onClick: () => send("setup_open", { dashboard_id: d.dashboard_id }, "Opening…"), children: "Open" })
+    ] }, d.dashboard_id)),
+    (s.alerts_made || []).length > 0 && /* @__PURE__ */ l.jsx("h4", { className: "su-h", children: "Alerts created (My alerts)" }),
+    (s.alerts_made || []).map((a) => /* @__PURE__ */ l.jsxs("div", { className: "su-row done", children: [/* @__PURE__ */ l.jsx("span", { className: "su-ok", children: "✓" }), /* @__PURE__ */ l.jsxs("span", { children: [/* @__PURE__ */ l.jsx("b", { children: a.name }), /* @__PURE__ */ l.jsx("small", { className: "muted", children: a.sentence })] })] }, a.name)),
+    [...(s.failed || []), ...(s.alerts_skipped || [])].length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "pc-note muted su-skip", children: [/* @__PURE__ */ l.jsx("b", { children: "Not set up: " }), [...(s.failed || []), ...(s.alerts_skipped || [])].map((x) => `${x.name} (${x.reason})`).join(" · ")] }),
+    /* @__PURE__ */ l.jsx("div", { className: "modal-foot su-foot", children: /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn", onClick: close, children: "Done" }) })
+  ] });
+  return /* @__PURE__ */ l.jsx("div", { className: "modal-back", children: /* @__PURE__ */ l.jsxs("div", { className: "modal setup", role: "dialog", "aria-modal": "true", "aria-label": "Set me up", children: [
+    /* @__PURE__ */ l.jsxs("div", { className: "su-head", children: [
+      /* @__PURE__ */ l.jsxs("div", { children: [/* @__PURE__ */ l.jsx("span", { className: "rd-eyebrow", children: `✦ Set me up · ${s.domain || ""}${s.company ? " · " + s.company : ""}` }), /* @__PURE__ */ l.jsx("h2", { children: s.stage === "interview" ? "Tell me about your work" : s.stage === "propose" ? "Here's what I'd set up for you" : "You're set up" })] }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "x", "aria-label": "Close", onClick: close, children: "×" })
+    ] }),
+    body
+  ] }) });
+}
+/* the panel is rendered at the app root (outside the animated Home hero), so it overlays the whole screen */
+function SetupPortal(props) {
+  const r = P.useRef(null), [host, setHost] = P.useState(null);
+  P.useEffect(() => { r.current && setHost(r.current.closest(".aa") || document.body); }, []);
+  return /* @__PURE__ */ l.jsxs(l.Fragment, { children: [/* @__PURE__ */ l.jsx("span", { ref: r, hidden: !0 }), host && Ae.createPortal(/* @__PURE__ */ l.jsx(SetupPanel, props), host)] });
+}
+/* ---- Share snapshot + Meeting brief (28 Oct) ---- */
+function RootPortal({ children }) {
+  const r = P.useRef(null), [host, setHost] = P.useState(null);
+  P.useEffect(() => { r.current && setHost(r.current.closest(".aa") || document.body); }, []);
+  return /* @__PURE__ */ l.jsxs(l.Fragment, { children: [/* @__PURE__ */ l.jsx("span", { ref: r, hidden: !0 }), host && Ae.createPortal(children, host)] });
+}
+function aaEsc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+function aaCss(node) {
+  const out = [];
+  try {
+    const root = node.getRootNode ? node.getRootNode() : document;
+    (root.querySelectorAll ? [...root.querySelectorAll("style")] : []).forEach((st) => out.push(st.textContent || ""));
+    [...(root.adoptedStyleSheets || [])].forEach((ss) => { try { out.push([...ss.cssRules].map((r) => r.cssText).join("\n")); } catch (x) {} });
+    if (root !== document) [...document.querySelectorAll("style")].forEach((st) => out.push(st.textContent || ""));
+  } catch (x) {}
+  return out.join("\n");
+}
+function aaDownload(name, html) {
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" })), a = document.createElement("a");
+  a.href = url, a.download = name, document.body.appendChild(a), a.click(), a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4e3);
+}
+function aaFile(s) { return String(s || "dashboard").replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 60); }
+const AA_SNAP_CSS = `
+body{margin:0;background:#f6f8fb}.aa.snap{display:block;min-height:0;border:0;border-radius:0;max-width:1280px;margin:0 auto;padding:24px}
+.snap-stamp{border:1px solid #d8e0ea;background:#fff;border-radius:12px;padding:14px 18px;margin-bottom:16px;font:13px/1.5 Inter,Segoe UI,system-ui,sans-serif;color:#0f1d2e}
+.snap-stamp h1{margin:2px 0 6px;font-size:24px}.snap-stamp .k{color:#5d6b7e}.snap-stamp .live{display:inline-block;background:#fff4e5;color:#8a5300;border-radius:6px;padding:1px 8px;font-weight:600}
+.snap .tile-acts,.snap .tile.add,.snap .add-btn,.snap .show-as,.snap .ghost-ai,.snap .tile-skel,.snap .pending-tile,.snap .ask-pop,.snap .sparkle,.snap .ptab-acts,.snap .ptab-add,.snap button.ghost,.snap .rc-x{display:none!important}
+.snap button{pointer-events:none}.snap .ws2.snap-ws{display:block;padding:0;margin:0;min-height:0;background:none}.snap .viewbar{display:none!important}
+.snap-stamp a{color:#1872c4;text-decoration:none}.snap-page{margin-top:22px}.snap-ph{display:flex;align-items:baseline;gap:12px;border-bottom:2px solid #29b5e8;margin-bottom:12px;padding-bottom:6px;font-family:Inter,Segoe UI,system-ui,sans-serif}.snap-ph span{color:#5d6b7e;font-size:12px;text-transform:uppercase;letter-spacing:.06em}.snap-ph h2{margin:0;font-size:20px;color:#0f1d2e}
+@media print{body{background:#fff}.aa.snap{padding:0}.snap .tile{break-inside:avoid}.snap-print{display:none}.snap-page{break-before:page}.snap-page:first-of-type{break-before:auto}}
+`;
+function aaCapture(main) {
+  const clone = main.cloneNode(!0);
+  const srcC = [...main.querySelectorAll("canvas")], dstC = [...clone.querySelectorAll("canvas")];
+  dstC.forEach((c, i) => { try { const im = document.createElement("img"); im.src = srcC[i].toDataURL("image/png"); im.style.width = srcC[i].style.width || srcC[i].width + "px"; c.replaceWith(im); } catch (x) {} });
+  const srcS = [...main.querySelectorAll("select")], dstS = [...clone.querySelectorAll("select")];
+  dstS.forEach((s, i) => { const sp = document.createElement("span"); sp.className = "snap-sel"; sp.textContent = (srcS[i].options[srcS[i].selectedIndex] || {}).text || ""; s.replaceWith(sp); });
+  clone.querySelectorAll(".summary").forEach((x) => { x.querySelector(".ghost-ai") && x.remove(); });   // summary never generated
+  return clone.outerHTML;
+}
+const aaSleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+async function aaUntil(fn, ms) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return !0; await aaSleep(300); } return !1; }
+/* Every page of the dashboard in one file: each page is shown in turn (its governed queries run if it was never
+   opened), captured once its tiles have data, then the page you were on is shown again. */
+async function aaSnapshot(btn, e, pages, cur, setPage) {
+  const view = btn.closest(".view") || btn.closest("section");
+  if (!view || btn.dataset.busy) return;
+  const label0 = btn.textContent;
+  btn.dataset.busy = "1";
+  const sections = [], skipped = [];
+  try {
+    const list = (pages || []).filter((pg) => (pg.components || []).some((c) => c.state !== "omitted"));
+    for (let n = 0; n < list.length; n++) {
+      const pg = list[n];
+      btn.textContent = `Capturing page ${n + 1} of ${list.length}…`;
+      setPage(pg.page_id);
+      await aaSleep(500);
+      const ok = await aaUntil(() => {
+        const main = view.querySelector(".ws-main"), tab = view.querySelector(".ptab.on");
+        return main && (!tab || (tab.textContent || "").includes(pg.label)) && !main.querySelector(".tile-skel, .pending-tile, .tile .spinner");
+      }, 120000);
+      await aaSleep(900);                                  // charts finish drawing
+      const main = view.querySelector(".ws-main");
+      if (!main || !ok) { skipped.push(pg.label); continue; }
+      sections.push({ label: pg.label, q: pg.purpose || "", html: aaCapture(main) });
+    }
+  } catch (x) {
+    console.log("[AA] snapshot failed", x);
+  } finally {
+    setPage(cur);
+    btn.textContent = label0, delete btn.dataset.busy;
+  }
+  if (!sections.length) return;
+  const name = (e.dashboard && e.dashboard.name) || (e.spec && e.spec.display_name) || "Dashboard";
+  const cal = (e.profile || {}).calendar || {}, v = e.view || {};
+  const flt = Object.entries(v.filters || {}).filter(([, x]) => x && x.length).map(([k, x]) => `${k.split(".").pop().replace(/_/g, " ").toLowerCase()} = ${x.join(", ")}`).join("; ") || "no filters";
+  const when = new Date().toISOString().slice(0, 16).replace("T", " ");
+  const toc = sections.map((s, n) => `<a href="#p${n + 1}">${n + 1}. ${aaEsc(s.label)}</a>`).join(" · ");
+  const stamp = `<div class="snap-stamp"><span class="live">Snapshot · not live</span><h1>${aaEsc(name)}</h1>` +
+    `<div><span class="k">Pages:</span> ${toc}</div>` +
+    `<div><span class="k">Period:</span> ${aaEsc(cal.current_label || "")} · <span class="k">Data through:</span> ${aaEsc(cal.max_date || "")} · <span class="k">Filters:</span> ${aaEsc(flt)}</div>` +
+    `<div class="k">Taken ${aaEsc(when)} UTC${e.viewer ? " by " + aaEsc(e.viewer) : ""} from Analytics Accelerator. Every number comes from the governed Snowflake semantic view ${aaEsc((e.source || {}).fqn || "")}. Open the live dashboard in Snowflake for current figures.</div>` +
+    (skipped.length ? `<div class="k">Not included (data did not load in time): ${aaEsc(skipped.join(", "))}</div>` : "") +
+    `<div class="snap-print k">To save as PDF: press Ctrl+P (Cmd+P on Mac) and choose "Save as PDF"; each dashboard page starts on a new PDF page.</div></div>`;
+  const body = sections.map((s, n) => `<section class="snap-page" id="p${n + 1}"><div class="snap-ph"><span>Page ${n + 1} of ${sections.length}</span><h2>${aaEsc(s.label)}</h2></div><div class="ws2 snap-ws">${s.html}</div></section>`).join("");
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${aaEsc(name)} · snapshot ${aaEsc(when.slice(0, 10))}</title><style>${aaCss(view)}\n${AA_SNAP_CSS}</style></head><body><div class="aa snap">${stamp}${body}</div></body></html>`;
+  aaDownload(`${aaFile(name)}_snapshot_${when.slice(0, 10)}.html`, html);
+}
+function aaBriefText(b) {
+  const L = [`MEETING BRIEF: ${b.name}`, `For: ${b.for} · Period: ${b.period} · Data through ${b.through} · Filters: ${b.filters}`, "", b.headline, ""];
+  (b.numbers || []).length && L.push("Key numbers", ...(b.numbers || []).map((n) => `- ${n.label}: ${n.value}${n.change ? " (" + n.change + ")" : ""}`), "");
+  [["What is driving it", b.drivers], ["Risks to watch", b.risks], ["Suggested actions", b.actions]].forEach(([h, xs]) => (xs || []).length && L.push(h, ...(xs || []).map((x) => "- " + x), ""));
+  (b.questions || []).length && L.push("Questions you may get", ...(b.questions || []).map((q) => `- ${q.q}\n  ${q.a}`), "");
+  L.push(`Written by Cortex only from ${b.facts} governed facts; every figure checked against them. ${b.at}`);
+  return L.join("\n");
+}
+function aaBriefHtml(b) {
+  const li = (xs) => (xs || []).map((x) => `<li>${aaEsc(x)}</li>`).join("");
+  const sec = (h, xs) => (xs || []).length ? `<h3>${h}</h3><ul>${li(xs)}</ul>` : "";
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Meeting brief · ${aaEsc(b.name)}</title><style>
+body{font:15px/1.55 Inter,Segoe UI,system-ui,sans-serif;color:#0f1d2e;max-width:780px;margin:32px auto;padding:0 24px}
+.k{color:#5d6b7e;font-size:13px}h1{font-size:24px;margin:4px 0}h3{font-size:15px;margin:18px 0 6px;color:#11567f}
+.head{font-size:18px;font-weight:600;border-left:4px solid #7d44cf;padding:8px 14px;background:#f7f3ff;border-radius:6px}
+.nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:12px}.n{border:1px solid #d8e0ea;border-radius:10px;padding:10px 12px}
+.n b{display:block;font-size:22px}.q b{display:block}.q{margin:6px 0 10px}@media print{body{margin:0}}</style></head><body>
+<div class="k">MEETING BRIEF · for the ${aaEsc(b.for)}</div><h1>${aaEsc(b.name)}</h1>
+<div class="k">Period: ${aaEsc(b.period)} · Data through ${aaEsc(b.through)} · Filters: ${aaEsc(b.filters)} · Pages: ${aaEsc((b.pages || []).join(", "))}</div>
+<p class="head">${aaEsc(b.headline)}</p>
+<div class="nums">${(b.numbers || []).map((n) => `<div class="n"><span class="k">${aaEsc(n.label)}</span><b>${aaEsc(n.value)}</b><span class="k">${aaEsc(n.change)}</span></div>`).join("")}</div>
+${sec("What is driving it", b.drivers)}${sec("Risks to watch", b.risks)}${sec("Suggested actions", b.actions)}
+${(b.questions || []).length ? `<h3>Questions you may get</h3>${b.questions.map((q) => `<div class="q"><b>${aaEsc(q.q)}</b>${aaEsc(q.a)}</div>`).join("")}` : ""}
+<p class="k" style="margin-top:24px">Written by Cortex only from ${b.facts} governed facts of the semantic view ${aaEsc(b.sv)}; every figure checked against them${b.removed ? ` (${b.removed} statement(s) dropped because a figure did not match)` : ""}. ${aaEsc(b.at)}${b.by ? " · " + aaEsc(b.by) : ""}. Save as PDF: Ctrl+P.</p>
+</body></html>`;
+}
+function BriefModal({ b, send }) {
+  const [copied, setCopied] = P.useState(!1);
+  const close = () => send("brief_close", {}, "…", !0);
+  const copy = () => { try { navigator.clipboard.writeText(aaBriefText(b)).then(() => setCopied(!0)); } catch (x) {} };
+  const list = (h, xs) => (xs || []).length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "br-sec", children: [/* @__PURE__ */ l.jsx("h4", { children: h }), /* @__PURE__ */ l.jsx("ul", { children: xs.map((x, i) => /* @__PURE__ */ l.jsx("li", { children: x }, i)) })] });
+  return /* @__PURE__ */ l.jsx(RootPortal, { children: /* @__PURE__ */ l.jsx("div", { className: "modal-back", onClick: close, children: /* @__PURE__ */ l.jsxs("div", { className: "modal brief", role: "dialog", "aria-modal": "true", "aria-label": "Meeting brief", onClick: (ev) => ev.stopPropagation(), children: [
+    /* @__PURE__ */ l.jsxs("div", { className: "su-head", children: [
+      /* @__PURE__ */ l.jsxs("div", { children: [/* @__PURE__ */ l.jsx("span", { className: "rd-eyebrow", children: `Meeting brief · for the ${b.for}` }), /* @__PURE__ */ l.jsx("h2", { children: b.name }),
+        /* @__PURE__ */ l.jsx("div", { className: "muted small", children: `${b.period ? b.period + " · " : ""}data through ${b.through} · ${b.filters} · pages: ${(b.pages || []).join(", ")}` })] }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "x", "aria-label": "Close", onClick: close, children: "×" })
+    ] }),
+    b.headline && /* @__PURE__ */ l.jsx("p", { className: "br-head", children: b.headline }),
+    (b.numbers || []).length > 0 && /* @__PURE__ */ l.jsx("div", { className: "br-nums", children: b.numbers.map((n, i) => /* @__PURE__ */ l.jsxs("div", { className: "br-num", children: [/* @__PURE__ */ l.jsx("small", { children: n.label }), /* @__PURE__ */ l.jsx("b", { children: n.value }), /* @__PURE__ */ l.jsx("small", { children: n.change })] }, i)) }),
+    list("What is driving it", b.drivers), list("Risks to watch", b.risks), list("Suggested actions", b.actions),
+    (b.questions || []).length > 0 && /* @__PURE__ */ l.jsxs("div", { className: "br-sec", children: [/* @__PURE__ */ l.jsx("h4", { children: "Questions you may get" }), b.questions.map((q, i) => /* @__PURE__ */ l.jsxs("div", { className: "br-q", children: [/* @__PURE__ */ l.jsx("b", { children: q.q }), /* @__PURE__ */ l.jsx("span", { children: q.a })] }, i))] }),
+    /* @__PURE__ */ l.jsx("p", { className: "muted small br-prov", children: `Written by Cortex only from ${b.facts} governed facts; every figure checked against them${b.removed ? ` (${b.removed} statement${b.removed === 1 ? "" : "s"} dropped: a figure did not match)` : ""}.` }),
+    /* @__PURE__ */ l.jsxs("div", { className: "modal-foot su-foot", children: [
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "ghost", onClick: copy, children: copied ? "Copied ✓" : "Copy text" }),
+      /* @__PURE__ */ l.jsx("button", { type: "button", className: "btn", onClick: () => aaDownload(`${aaFile(b.name)}_brief_${String(b.at || "").slice(0, 10)}.html`, aaBriefHtml(b)), children: "Download (HTML · PDF)" })
+    ] })
+  ] }) }) });
+}
